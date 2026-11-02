@@ -44,14 +44,14 @@ async function notifyRoster(eventId){
  const title=(e.cancelled?'🚫 SOIRÉE ANNULÉE':ended?'🏁 SOIRÉE TERMINÉE':'🎮 INSCRITS')+' · '+e.game;
  const lines=['## '+title,'',`📅 **Début** · <t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`,`👥 **Participation** · ${rows.length} / ${e.capacity} places`,'','### Les joueurs',...rows.map((r,i)=>`${i+1}. <@${r.mv_profiles.discord_id}> · ${labels[r.attendance]||'Inscrit'}`)];
  if(!rows.length)lines.push('Aucune personne inscrite pour le moment.');
- lines.push('','— **Multix** · Le Multivers');if(e.image_url)lines.push(e.image_url);
+ lines.push('','— **Multix** · Le Multivers');
  const chunks=[];let chunk='';for(const line of lines){if((chunk+'\n'+line).length>1900){chunks.push(chunk);chunk=''}chunk+=(chunk?'\n':'')+line;}if(chunk)chunks.push(chunk);
  const channel=settings.roster_channel_id;
  const existing=e.roster_channel_id===channel?[e.roster_message_id,...(e.roster_extra_message_ids||[])].filter(Boolean):[];
  const ids=[];
  for(let i=0;i<chunks.length;i++){
  const users=[...chunks[i].matchAll(/<@(\d+)>/g)].map(m=>m[1]);
- const data={content:chunks[i],embeds:[],allowed_mentions:existing[i]?{parse:[]}:{parse:[],users}};
+ const data={content:chunks[i],embeds:i===chunks.length-1&&e.image_url?[{image:{url:e.image_url}}]:[],allowed_mentions:existing[i]?{parse:[]}:{parse:[],users}};
  if(existing[i]){await discord(`/channels/${channel}/messages/${existing[i]}`,'PATCH',data);ids.push(existing[i]);}
  else{const message=await discord(`/channels/${channel}/messages`,'POST',data);ids.push(message.id);}
  }
@@ -102,8 +102,8 @@ Deno.serve(async req=>{
  const when=Math.floor(Date.now()/1000)+3600;
  const results=[];
  const samples=[{channel:settings.announcement_channel_id,payload:{content:'🧪 **TEST DE PROGRAMMATION — aucune notification envoyée**\n@everyone',allowed_mentions:{parse:[]},embeds:[{title:'Nouvelle soirée · Soirée jeux du Multivers',description:'On se retrouve pour jouer ensemble, découvrir un jeu et partager de bons moments !\n\n*Message de démonstration : aucune inscription réelle.*',color:9854207,fields:[{name:'Début',value:`<t:${when}:F>`,inline:true},{name:'Places proposées',value:'3',inline:true},{name:'Inscriptions',value:'[S’inscrire sur Le Multivers](https://cgasmj-blip.github.io/le-multivers/)'}],image:{url:'https://cgasmj-blip.github.io/le-multivers/assets/multivers.webp'},footer:{text:'Multix · Le Multivers · TEST'}}]}},
- {channel:settings.roster_channel_id,payload:{content:`## 🎮 INSCRITS · Soirée jeux du Multivers\n\n🧪 **TEST — joueurs fictifs, aucune notification envoyée**\n\n📅 **Début** · <t:${when}:F>\n👥 **Participation** · 3 / 3 places\n\n### Les joueurs\n1. **Exemple · Alex**\n2. **Exemple · Sam**\n3. **Exemple · Camille**\n\n— **Multix** · Le Multivers\nhttps://cgasmj-blip.github.io/le-multivers/assets/multivers.webp`,allowed_mentions:{parse:[]},embeds:[]}}];
- for(const sample of samples){try{const message=await discord(`/channels/${sample.channel}/messages`,'POST',sample.payload);results.push({channel_id:sample.channel,message_id:message.id,ok:true})}catch(e){results.push({channel_id:sample.channel,ok:false,error:e.message})}}
+ {channel:settings.roster_channel_id,payload:{content:`## 🎮 INSCRITS · Soirée jeux du Multivers\n\n🧪 **TEST — joueurs fictifs, aucune notification envoyée**\n\n📅 **Début** · <t:${when}:F>\n👥 **Participation** · 3 / 3 places\n\n### Les joueurs\n1. **Exemple · Alex**\n2. **Exemple · Sam**\n3. **Exemple · Camille**\n\n— **Multix** · Le Multivers`,allowed_mentions:{parse:[]},embeds:[{image:{url:'https://cgasmj-blip.github.io/le-multivers/assets/multivers.webp'}}]}}];
+ for(const sample of samples){try{const previous=sample.channel==='1564005454961578114'?'1566934021269749811':'1566934022461071475';const message=await discord(`/channels/${sample.channel}/messages`+(b.update_existing?'/'+previous:''),b.update_existing?'PATCH':'POST',sample.payload);results.push({channel_id:sample.channel,message_id:message.id,ok:true})}catch(e){results.push({channel_id:sample.channel,ok:false,error:e.message})}}
  return new Response(JSON.stringify({tests:results}),{headers:cors});
  }
  if(action==='check-discord'){

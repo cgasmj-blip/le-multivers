@@ -1,5 +1,4 @@
 const GUILD='1187492291892486195', MANAGER='1564000010247475270';
-const PARTICIPANT_ROLE='1566911321612623963';
 const ORIGIN='https://cgasmj-blip.github.io';
 const URL=Deno.env.get('SUPABASE_URL'), KEY=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const cors={'Access-Control-Allow-Origin':ORIGIN,'Access-Control-Allow-Headers':'authorization, apikey, content-type, x-cron-secret','Access-Control-Allow-Methods':'POST, OPTIONS','Vary':'Origin','Content-Type':'application/json','Cache-Control':'no-store'};
@@ -72,19 +71,48 @@ async function notifyAnnouncement(eventId){
 }
 async function safeAnnouncement(id){try{return await notifyAnnouncement(id)}catch(e){console.error('event-announcement',e.message);return {error:e.message}}}
 async function safeNotify(eventId){try{return await notifyRoster(eventId)}catch(e){console.error('roster-notification',e.message);return {error:e.message}}}
+async function eventCategory(){
+ const settings=(await db('mv_settings?id=eq.true'))[0];
+ const first=await discord(`/channels/${settings.announcement_channel_id}`);
+ const second=await discord(`/channels/${settings.roster_channel_id}`);
+ if(first.guild_id!==GUILD||second.guild_id!==GUILD||!first.parent_id||first.parent_id!==second.parent_id)throw new HttpError('Les deux canaux doivent appartenir à la même catégorie Discord.',400);
+ return first.parent_id;
+}
+async function ensureResources(eventId){
+ let e=(await db(`mv_events?id=eq.${eventId}`))[0];
+ if(!e||!e.published||e.cancelled||(e.ends_at&&Date.parse(e.ends_at)<=Date.now()))return;
+ if(e.resources_owned&&e.role_id&&e.channel_id&&!e.channel_closed)return;
+ if(!await db('rpc/mv_claim_resources','POST',{p_event:eventId}))throw new HttpError('Création du vocal déjà en cours. Réessaie dans un instant.',409);
+ try{
+ const parent=await eventCategory();
+ if(!e.resources_owned||!e.role_id){const role=await discord(`/guilds/${GUILD}/roles`,'POST',{name:('⭐・Soirée — '+e.game).slice(0,100),permissions:'0',mentionable:false});
+ await db(`mv_events?id=eq.${eventId}`,'PATCH',{role_id:role.id,resources_owned:true});e.role_id=role.id;}
+ const bot=await discord('/users/@me');
+ const channel=await discord(`/guilds/${GUILD}/channels`,'POST',{name:('⭐・'+e.game).slice(0,100),type:2,parent_id:parent,permission_overwrites:[{id:GUILD,type:0,deny:'1049600',allow:'0'},{id:e.role_id,type:0,allow:'1049600',deny:'0'},{id:bot.id,type:1,allow:'1049600',deny:'0'}]});
+ await db(`mv_events?id=eq.${eventId}`,'PATCH',{channel_id:channel.id,channel_closed:false,resource_error:null});
+ }catch(err){await db(`mv_events?id=eq.${eventId}`,'PATCH',{resource_error:err.message});throw err;}
+ finally{await db(`mv_events?id=eq.${eventId}`,'PATCH',{resources_busy_until:null});}
+}
+async function closeFinishedVocals(){
+ const events=await db('mv_events?resources_owned=eq.true&channel_closed=eq.false&channel_id=not.is.null');
+ let closed=0,failed=0;
+ for(const e of events){if(e.published&&!e.cancelled&&(!e.ends_at||Date.parse(e.ends_at)>Date.now()))continue;
+ try{const channel=await discord(`/channels/${e.channel_id}`);if(channel.guild_id!==GUILD||channel.type!==2)throw new Error('Le canal à fermer n’est pas le vocal prévu.');await discord(`/channels/${e.channel_id}`,'DELETE');
+ await db(`mv_events?id=eq.${e.id}`,'PATCH',{channel_closed:true,resource_error:null});closed++;
+ }catch(err){if(err.status===403){await db(`mv_events?id=eq.${e.id}`,'PATCH',{channel_closed:true,resource_error:null});closed++;}else{failed++;await db(`mv_events?id=eq.${e.id}`,'PATCH',{resource_error:err.message});}}
+ }
+ return {closed,failed};
+}
 async function syncRoles(){
- // A database lease avoids overlapping cron runs; expires automatically after 90 seconds.
  const leased=await db('rpc/mv_acquire_sync','POST',{});if(!leased)return {busy:true};
  let changed=0,failed=0;
  try{
- const rows=await db('rpc/mv_due_shared_roles','POST',{});
- for(const row of rows.slice(0,50)){
- try{
- await discord(`/guilds/${GUILD}/members/${row.discord_id}/roles/${PARTICIPANT_ROLE}`,row.desired?'PUT':'DELETE');
- await db('rpc/mv_record_shared_role','POST',{p_user:row.user_id,p_granted:row.desired,p_error:null});changed++;
- }catch(err){failed++;await db('rpc/mv_record_shared_role','POST',{p_user:row.user_id,p_granted:row.role_granted,p_error:String(err.message).slice(0,300)});}
+ const rows=await db('rpc/mv_due_roles','POST',{});
+ for(const row of rows){const e=row.mv_events;const desired=row.registered&&e.published&&!e.cancelled&&Date.now()>=Date.parse(e.starts_at)-1800000&&(!e.ends_at||Date.now()<Date.parse(e.ends_at));
+ try{await discord(`/guilds/${GUILD}/members/${row.mv_profiles.discord_id}/roles/${e.role_id}`,desired?'PUT':'DELETE');await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{role_granted:desired,sync_error:null});changed++;}
+ catch(err){failed++;await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{sync_error:err.message});}
  }
- return {changed,failed};
+ const cleanup=await closeFinishedVocals();return {changed,failed:failed+cleanup.failed,closed:cleanup.closed};
  }finally{await db('rpc/mv_release_sync','POST',{});}
 }
 Deno.serve(async req=>{
@@ -95,8 +123,9 @@ Deno.serve(async req=>{
  const raw=await req.text();if(raw.length>4600000)throw new HttpError('Fichier trop volumineux',413);
  let b;try{b=JSON.parse(raw)}catch{throw new HttpError('Requête invalide')}
  const action=b.action;
- if(action==='sync'||action==='check-discord'||action==='test-messages'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ if(action==='check-category')return new Response(JSON.stringify({category_id:await eventCategory()}),{headers:cors});
  if(action==='test-messages'){
  const settings=(await db('mv_settings?id=eq.true'))[0];
  const when=Math.floor(Date.now()/1000)+3600;
@@ -144,9 +173,9 @@ Deno.serve(async req=>{
  const start=new Date(b.starts_at);if(!Number.isFinite(+start))throw new HttpError('Date de début invalide');const capacity=Number(b.capacity);if(!Number.isInteger(capacity)||capacity<1||capacity>100)throw new HttpError('Nombre de places invalide');
  const data={game:text(b.game),description:typeof b.description==='string'?b.description.slice(0,2000):'',image_url:image(b.image_url),starts_at:start.toISOString(),capacity,published:b.published===true,cancelled:b.cancelled===true,sort_order:Number.isInteger(Number(b.sort_order))?Number(b.sort_order):0};
  let e;if(b.id){e=(await db(`mv_events?id=eq.${uuid(b.id)}`))[0];if(!e)throw new HttpError('Soirée introuvable',404);const count=await db(`mv_registrations?event_id=eq.${e.id}&registered=eq.true`);if(count.length>capacity)throw new HttpError('La capacité est inférieure au nombre d’inscrits');}
- // All sessions use the community’s existing temporary role. No roles or channels are created.
- data.role_id=PARTICIPANT_ROLE;
+
  if(e)result=(await db(`mv_events?id=eq.${e.id}`,'PATCH',data))[0];else result=(await db('mv_events','POST',data))[0];
+ if(result.published)await ensureResources(result.id);
  await syncRoles();
  result={...result,notification:await safeNotify(result.id),announcement:await safeAnnouncement(result.id)};
  }else if(action==='save-poll'){

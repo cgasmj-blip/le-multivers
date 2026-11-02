@@ -9,11 +9,13 @@ async function db(path,method='GET',body,prefer='return=representation'){
  if(!r.ok)throw new HttpError(data?.message||'Erreur de base de données',400);return data;
 }
 async function discord(path,method='GET',body){
- const token=Deno.env.get('DISCORD_BOT_TOKEN');if(!token)throw new HttpError('Le bot Discord doit encore être configuré.',503);
+ const token=Deno.env.get('DISCORD_BOT_TOKEN')?.trim();if(!token)throw new HttpError('Le bot Discord doit encore être configuré.',503);
  const r=await fetch('https://discord.com/api/v10'+path,{method,headers:{Authorization:`Bot ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
  if(r.status===429)throw new HttpError('Discord est temporairement occupé. Réessaie dans quelques instants.',503);
  if(r.status===404)throw new HttpError('Membre ou ressource introuvable sur le serveur Discord.',403);
- if(!r.ok)throw new HttpError('Discord refuse cette action. Vérifie les permissions et la position du bot.',502);
+ if(r.status===401)throw new HttpError('Le token du bot Discord est invalide. Un responsable doit le remplacer dans Supabase.',503);
+ if(r.status===403)throw new HttpError('Le bot n’a pas accès à ce serveur ou à cette action Discord.',502);
+ if(!r.ok)throw new HttpError('Discord est indisponible pour le moment.',502);
  return r.status===204?null:await r.json();
 }
 function text(v,max=100){if(typeof v!=='string'||!v.trim()||v.trim().length>max)throw new HttpError('Texte invalide');return v.trim()}
@@ -54,8 +56,18 @@ Deno.serve(async req=>{
  const raw=await req.text();if(raw.length>4600000)throw new HttpError('Fichier trop volumineux',413);
  let b;try{b=JSON.parse(raw)}catch{throw new HttpError('Requête invalide')}
  const action=b.action;
- if(action==='sync'){
+ if(action==='sync'||action==='check-discord'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ if(action==='check-discord'){
+ const token=Deno.env.get('DISCORD_BOT_TOKEN')?.trim();
+ if(!token)return new Response(JSON.stringify({configured:false}),{headers:cors});
+ const headers={Authorization:`Bot ${token}`};
+ const botResponse=await fetch('https://discord.com/api/v10/users/@me',{headers});
+ const info={configured:true,bot_status:botResponse.status};
+ if(botResponse.ok){const bot=await botResponse.json();info.bot_id=bot.id;info.expected_bot=bot.id==='1566913973687812286';
+ const guildResponse=await fetch(`https://discord.com/api/v10/guilds/${GUILD}`,{headers});info.guild_status=guildResponse.status;}
+ return new Response(JSON.stringify(info),{headers:cors});
+ }
  return new Response(JSON.stringify(await syncRoles()),{headers:cors});
  }
  const me=await identity(req);

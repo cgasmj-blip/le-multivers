@@ -2,7 +2,7 @@
 create table public.mv_settings (
  id boolean primary key default true check(id), guild_id text not null, manager_role_id text not null, discord_invite text not null
 );
-insert into public.mv_settings values(true,'1187492291892486195','1564000010247475270','https://discord.gg/ZZr56KCCMP');
+insert into public.mv_settings values(true,'1187492291892486195','1564000010247475270','https://discord.gg/TCqSHWyzXM');
 create table public.mv_profiles (
  user_id uuid primary key references auth.users(id) on delete cascade,
  discord_id text unique not null check(discord_id ~ '^[0-9]{17,20}$'), display_name text not null

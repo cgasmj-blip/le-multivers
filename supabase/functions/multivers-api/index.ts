@@ -37,16 +37,31 @@ async function notifyRoster(eventId){
  if(!settings?.roster_channel_id)return {configured:false};
  const e=(await db(`mv_events?id=eq.${eventId}`))[0];
  const rows=await db(`mv_registrations?event_id=eq.${eventId}&registered=eq.true&select=*,mv_profiles(discord_id)&order=updated_at.asc`);
+ if(!e.published||e.cancelled){if(!e.roster_message_id)return {skipped:true};}
+ if(!e.roster_message_id&&rows.length<e.capacity)return {waiting_for_full:true};
  const labels={present:'Présent',absent:'Absent',excused:'Excusé',unmarked:'Inscrit'};
  const description=rows.length?rows.map((r,i)=>`${i+1}. <@${r.mv_profiles.discord_id}> · ${labels[r.attendance]||'Inscrit'}`).join('\n'):'Aucune personne inscrite pour le moment.';
- const data={allowed_mentions:{parse:[]},embeds:[{title:(e.cancelled?'Annulée · ':'Inscrits · ')+e.game,description:description.slice(0,4096),color:9854207,fields:[{name:'Début',value:`<t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`},{name:'Participation',value:`${rows.length} / ${e.capacity} places`}],footer:{text:'Le Multivers · liste mise à jour automatiquement'}}]};
+ const data={content:rows.slice(0,75).map(r=>`<@${r.mv_profiles.discord_id}>`).join(' '),allowed_mentions:{parse:[],users:rows.slice(0,75).map(r=>r.mv_profiles.discord_id)},embeds:[{title:(e.cancelled?'Annulée · ':'Inscrits · ')+e.game,description:description.slice(0,4096),color:9854207,fields:[{name:'Début',value:`<t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`},{name:'Participation',value:`${rows.length} / ${e.capacity} places`}],footer:{text:'Le Multivers · liste mise à jour automatiquement'},...(e.image_url?{image:{url:e.image_url}}:{})}]};
  const channel=settings.roster_channel_id;
  if(e.roster_message_id&&e.roster_channel_id===channel){
- try{await discord(`/channels/${channel}/messages/${e.roster_message_id}`,'PATCH',data);return {ok:true};}catch(err){if(err.status!==403)throw err;}
+ try{await discord(`/channels/${channel}/messages/${e.roster_message_id}`,'PATCH',{...data,allowed_mentions:{parse:[]}});return {ok:true};}catch(err){if(err.status!==403)throw err;}
  }
  const message=await discord(`/channels/${channel}/messages`,'POST',data);
+ if(rows.length>75){const rest=rows.slice(75);await discord(`/channels/${channel}/messages`,'POST',{content:rest.map(r=>`<@${r.mv_profiles.discord_id}>`).join(' '),allowed_mentions:{parse:[],users:rest.map(r=>r.mv_profiles.discord_id)}});}
  await db(`mv_events?id=eq.${eventId}`,'PATCH',{roster_message_id:message.id,roster_channel_id:channel});return {ok:true};
 }
+async function notifyAnnouncement(eventId){
+ const e=(await db(`mv_events?id=eq.${eventId}`))[0];
+ if(!e.published&&!e.announcement_message_id)return {skipped:true};
+ const settings=(await db('mv_settings?id=eq.true'))[0];
+ const channel=settings?.announcement_channel_id;if(!channel)return {configured:false};
+ const data={content:'@everyone',allowed_mentions:{parse:['everyone']},embeds:[{title:(e.cancelled?'Soirée annulée · ':!e.published?'Soirée retirée · ':'Nouvelle soirée · ')+e.game,description:e.description||'Rejoins-nous pour une nouvelle soirée jeux !',color:e.cancelled?13848932:9854207,fields:[{name:'Début',value:`<t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`,inline:true},{name:'Fin',value:`<t:${Math.floor(Date.parse(e.ends_at)/1000)}:t>`,inline:true},{name:'Places proposées',value:String(e.capacity),inline:true},{name:'Inscriptions',value:'[S’inscrire sur Le Multivers](https://cgasmj-blip.github.io/le-multivers/)'}],...(e.image_url?{image:{url:e.image_url}}:{}),footer:{text:'Multix · Le Multivers'}}]};
+ if(e.announcement_message_id&&e.announcement_channel_id===channel){await discord(`/channels/${channel}/messages/${e.announcement_message_id}`,'PATCH',{...data,allowed_mentions:{parse:[]}});return {ok:true};}
+ if(e.cancelled||!e.published)return {skipped:true};
+ const message=await discord(`/channels/${channel}/messages`,'POST',data);
+ await db(`mv_events?id=eq.${eventId}`,'PATCH',{announcement_message_id:message.id,announcement_channel_id:channel});return {ok:true};
+}
+async function safeAnnouncement(id){try{return await notifyAnnouncement(id)}catch(e){console.error('event-announcement',e.message);return {error:e.message}}}
 async function safeNotify(eventId){try{return await notifyRoster(eventId)}catch(e){console.error('roster-notification',e.message);return {error:e.message}}}
 async function syncRoles(){
  // A database lease avoids overlapping cron runs; expires automatically after 90 seconds.
@@ -118,7 +133,7 @@ Deno.serve(async req=>{
  }
  if(e)result=(await db(`mv_events?id=eq.${e.id}`,'PATCH',data))[0];else result=(await db('mv_events','POST',data))[0];
  await syncRoles();
- result={...result,notification:await safeNotify(result.id)};
+ result={...result,notification:await safeNotify(result.id),announcement:await safeAnnouncement(result.id)};
  }else if(action==='save-poll'){
  const [start,end]=dates(b.opens_at,b.closes_at);const data={title:text(b.title),opens_at:start,closes_at:end,published:b.published===true};
  if(!Array.isArray(b.options)||b.options.length<2||b.options.length>10)throw new HttpError('Choisis entre 2 et 10 jeux');

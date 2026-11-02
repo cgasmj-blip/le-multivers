@@ -1,4 +1,5 @@
 const GUILD='1187492291892486195', MANAGER='1564000010247475270';
+const PARTICIPANT_ROLE='1566911321612623963';
 const ORIGIN='https://cgasmj-blip.github.io';
 const URL=Deno.env.get('SUPABASE_URL'), KEY=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const cors={'Access-Control-Allow-Origin':ORIGIN,'Access-Control-Allow-Headers':'authorization, apikey, content-type, x-cron-secret','Access-Control-Allow-Methods':'POST, OPTIONS','Vary':'Origin','Content-Type':'application/json','Cache-Control':'no-store'};
@@ -76,13 +77,12 @@ async function syncRoles(){
  const leased=await db('rpc/mv_acquire_sync','POST',{});if(!leased)return {busy:true};
  let changed=0,failed=0;
  try{
- const rows=await db('rpc/mv_due_roles','POST',{});
- for(const row of rows){const e=row.mv_events;const desired=row.registered&&e.published&&!e.cancelled&&Date.now()>=Date.parse(e.starts_at)&&(!e.ends_at||Date.now()<Date.parse(e.ends_at));
- if(desired===row.role_granted)continue;
- try{if(!e.role_id)throw new Error('Le rôle de la soirée manque');
- await discord(`/guilds/${GUILD}/members/${row.mv_profiles.discord_id}/roles/${e.role_id}`,desired?'PUT':'DELETE');
- await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{role_granted:desired,sync_error:null});changed++;
- }catch(err){failed++;await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{sync_error:String(err.message).slice(0,300)});}
+ const rows=await db('rpc/mv_due_shared_roles','POST',{});
+ for(const row of rows.slice(0,50)){
+ try{
+ await discord(`/guilds/${GUILD}/members/${row.discord_id}/roles/${PARTICIPANT_ROLE}`,row.desired?'PUT':'DELETE');
+ await db('rpc/mv_record_shared_role','POST',{p_user:row.user_id,p_granted:row.desired,p_error:null});changed++;
+ }catch(err){failed++;await db('rpc/mv_record_shared_role','POST',{p_user:row.user_id,p_granted:row.role_granted,p_error:String(err.message).slice(0,300)});}
  }
  return {changed,failed};
  }finally{await db('rpc/mv_release_sync','POST',{});}
@@ -144,12 +144,8 @@ Deno.serve(async req=>{
  const start=new Date(b.starts_at);if(!Number.isFinite(+start))throw new HttpError('Date de début invalide');const capacity=Number(b.capacity);if(!Number.isInteger(capacity)||capacity<1||capacity>100)throw new HttpError('Nombre de places invalide');
  const data={game:text(b.game),description:typeof b.description==='string'?b.description.slice(0,2000):'',image_url:image(b.image_url),starts_at:start.toISOString(),capacity,published:b.published===true,cancelled:b.cancelled===true,sort_order:Number.isInteger(Number(b.sort_order))?Number(b.sort_order):0};
  let e;if(b.id){e=(await db(`mv_events?id=eq.${uuid(b.id)}`))[0];if(!e)throw new HttpError('Soirée introuvable',404);const count=await db(`mv_registrations?event_id=eq.${e.id}&registered=eq.true`);if(count.length>capacity)throw new HttpError('La capacité est inférieure au nombre d’inscrits');}
- // Roles/channels are bot-created, never arbitrary permission-bearing roles supplied by a client.
- if(data.published&&!e?.role_id){
- const role=await discord(`/guilds/${GUILD}/roles`,'POST',{name:'Soirée · '+data.game,permissions:'0',mentionable:false});
- let ch;try{const bot=await discord('/users/@me');ch=await discord(`/guilds/${GUILD}/channels`,'POST',{name:'Soirée · '+data.game,type:2,permission_overwrites:[{id:GUILD,type:0,deny:'1049600',allow:'0'},{id:role.id,type:0,allow:'1049600',deny:'0'},{id:bot.id,type:1,allow:'1049600',deny:'0'}]});}catch(err){await discord(`/guilds/${GUILD}/roles/${role.id}`,'DELETE');throw err;}
- Object.assign(data,{role_id:role.id,channel_id:ch.id});
- }
+ // All sessions use the community’s existing temporary role. No roles or channels are created.
+ data.role_id=PARTICIPANT_ROLE;
  if(e)result=(await db(`mv_events?id=eq.${e.id}`,'PATCH',data))[0];else result=(await db('mv_events','POST',data))[0];
  await syncRoles();
  result={...result,notification:await safeNotify(result.id),announcement:await safeAnnouncement(result.id)};

@@ -55,7 +55,7 @@ function initTabs(){
  selectPanel(location.hash.slice(1));
 }
 function initForms(){const ef=$('#event-form'),pf=$('#poll-form');$('#timezone').textContent='Dates et heures dans ton fuseau : '+Intl.DateTimeFormat().resolvedOptions().timeZone;bindUpload(ef.querySelector('[data-upload]'),ef.elements.image_url);optionEditor();optionEditor();$('#add-option').onclick=()=>{if($('#option-editors').children.length>=10){status('10 jeux maximum.',true);return}optionEditor()};pf.addEventListener('reset',()=>setTimeout(()=>{$('#option-editors').replaceChildren();optionEditor();optionEditor()},0));
- ef.onsubmit=e=>{e.preventDefault();run(ef.querySelector('[type=submit]'),async()=>{const b=Object.fromEntries(new FormData(ef));delete b[''];b.published=ef.elements.published.checked;b.starts_at=new Date(b.starts_at).toISOString();await api('save-event',b);ef.reset();await adminRefresh();status('Soirée enregistrée.');})};
+ ef.onsubmit=e=>{e.preventDefault();run(ef.querySelector('[type=submit]'),async()=>{const b=Object.fromEntries(new FormData(ef));delete b[''];b.published=true;b.starts_at=new Date(b.starts_at).toISOString();await api('save-event',b);ef.reset();await adminRefresh();status('Soirée enregistrée.');})};
  pf.onsubmit=e=>{e.preventDefault();run(pf.querySelector('[type=submit]'),async()=>{const b=Object.fromEntries(new FormData(pf));b.published=true;b.opens_at=new Date(b.opens_at).toISOString();b.closes_at=new Date(b.closes_at).toISOString();b.options=[...$('#option-editors').children].map(row=>({game:row.querySelector('[data-game]').value,image_url:row.querySelector('[data-image]').value}));await api('save-poll',b);pf.reset();await adminRefresh();status('Vote enregistré.');})};$('#refresh-stats').onclick=()=>run($('#refresh-stats'),adminRefresh);
 
 }

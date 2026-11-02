@@ -37,6 +37,7 @@ create table public.mv_votes (
  foreign key(poll_id,option_id) references public.mv_options(poll_id,id) on delete restrict
 );
 create index mv_votes_option on public.mv_votes(option_id);
+create index mv_votes_poll_option on public.mv_votes(poll_id,option_id);
 create index mv_votes_user on public.mv_votes(user_id);
 -- No client can write directly or enumerate participants/voters.
 do $$ declare t text; begin

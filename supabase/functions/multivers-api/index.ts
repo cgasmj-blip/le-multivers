@@ -132,6 +132,14 @@ Deno.serve(async req=>{
  const raw=await req.text();if(raw.length>4600000)throw new HttpError('Fichier trop volumineux',413);
  let b;try{b=JSON.parse(raw)}catch{throw new HttpError('Requête invalide')}
  const action=b.action;
+ if(action==='availability'){
+ if(!Array.isArray(b.event_ids)||b.event_ids.length>3)throw new HttpError('Liste de soirées invalide');
+ const ids=b.event_ids.map(uuid);if(!ids.length)return new Response('[]',{headers:cors});
+ const events=await db(`mv_events?id=in.(${ids.join(',')})&published=eq.true&cancelled=eq.false&select=id,capacity`);
+ const registrations=await db(`mv_registrations?event_id=in.(${events.map(e=>e.id).join(',')||'00000000-0000-0000-0000-000000000000'})&registered=eq.true&select=event_id`);
+ return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
+ }
+
  if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='test-session'){

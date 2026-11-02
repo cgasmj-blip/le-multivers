@@ -39,22 +39,31 @@ async function notifyRoster(eventId){
  const rows=await db(`mv_registrations?event_id=eq.${eventId}&registered=eq.true&select=*,mv_profiles(discord_id)&order=updated_at.asc`);
  if(!e.published||e.cancelled){if(!e.roster_message_id)return {skipped:true};}
  if(!e.roster_message_id&&rows.length<e.capacity)return {waiting_for_full:true};
- const labels={present:'Présent',absent:'Absent',excused:'Excusé',unmarked:'Inscrit'};
- const description=rows.length?rows.map((r,i)=>`${i+1}. <@${r.mv_profiles.discord_id}> · ${labels[r.attendance]||'Inscrit'}`).join('\n'):'Aucune personne inscrite pour le moment.';
- const data={content:'',allowed_mentions:{parse:[]},embeds:[{title:(e.cancelled?'Annulée · ':'Inscrits · ')+e.game,description:description.slice(0,4096),color:9854207,fields:[{name:'Début',value:`<t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`},{name:'Participation',value:`${rows.length} / ${e.capacity} places`}],footer:{text:'Le Multivers · liste mise à jour automatiquement'},...(e.image_url?{image:{url:e.image_url}}:{})}]};
+ const labels={present:'✅ Présent',absent:'❌ Absent',excused:'💬 Excusé',unmarked:'Inscrit'};
+ const ended=e.ends_at&&Date.parse(e.ends_at)<=Date.now();
+ const title=(e.cancelled?'🚫 SOIRÉE ANNULÉE':ended?'🏁 SOIRÉE TERMINÉE':'🎮 INSCRITS')+' · '+e.game;
+ const lines=['## '+title,'',`📅 **Début** · <t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`,`👥 **Participation** · ${rows.length} / ${e.capacity} places`,'','### Les joueurs',...rows.map((r,i)=>`${i+1}. <@${r.mv_profiles.discord_id}> · ${labels[r.attendance]||'Inscrit'}`)];
+ if(!rows.length)lines.push('Aucune personne inscrite pour le moment.');
+ lines.push('','— **Multix** · Le Multivers');if(e.image_url)lines.push(e.image_url);
+ const chunks=[];let chunk='';for(const line of lines){if((chunk+'\n'+line).length>1900){chunks.push(chunk);chunk=''}chunk+=(chunk?'\n':'')+line;}if(chunk)chunks.push(chunk);
  const channel=settings.roster_channel_id;
- if(e.roster_message_id&&e.roster_channel_id===channel){
- try{await discord(`/channels/${channel}/messages/${e.roster_message_id}`,'PATCH',{...data,allowed_mentions:{parse:[]}});return {ok:true};}catch(err){if(err.status!==403)throw err;}
+ const existing=e.roster_channel_id===channel?[e.roster_message_id,...(e.roster_extra_message_ids||[])].filter(Boolean):[];
+ const ids=[];
+ for(let i=0;i<chunks.length;i++){
+ const users=[...chunks[i].matchAll(/<@(\d+)>/g)].map(m=>m[1]);
+ const data={content:chunks[i],embeds:[],allowed_mentions:existing[i]?{parse:[]}:{parse:[],users}};
+ if(existing[i]){await discord(`/channels/${channel}/messages/${existing[i]}`,'PATCH',data);ids.push(existing[i]);}
+ else{const message=await discord(`/channels/${channel}/messages`,'POST',data);ids.push(message.id);}
  }
- const message=await discord(`/channels/${channel}/messages`,'POST',data);
- await db(`mv_events?id=eq.${eventId}`,'PATCH',{roster_message_id:message.id,roster_channel_id:channel});return {ok:true};
+ for(const id of existing.slice(chunks.length))await discord(`/channels/${channel}/messages/${id}`,'DELETE');
+ await db(`mv_events?id=eq.${eventId}`,'PATCH',{roster_message_id:ids[0],roster_extra_message_ids:ids.slice(1),roster_channel_id:channel});return {ok:true};
 }
 async function notifyAnnouncement(eventId){
  const e=(await db(`mv_events?id=eq.${eventId}`))[0];
  if(!e.published&&!e.announcement_message_id)return {skipped:true};
  const settings=(await db('mv_settings?id=eq.true'))[0];
  const channel=settings?.announcement_channel_id;if(!channel)return {configured:false};
- const data={content:'@everyone',allowed_mentions:{parse:['everyone']},embeds:[{title:(e.cancelled?'Soirée annulée · ':!e.published?'Soirée retirée · ':'Nouvelle soirée · ')+e.game,description:e.description||'Rejoins-nous pour une nouvelle soirée jeux !',color:e.cancelled?13848932:9854207,fields:[{name:'Début',value:`<t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`,inline:true},{name:'Places proposées',value:String(e.capacity),inline:true},{name:'Inscriptions',value:'[S’inscrire sur Le Multivers](https://cgasmj-blip.github.io/le-multivers/)'}],...(e.image_url?{image:{url:e.image_url}}:{}),footer:{text:'Multix · Le Multivers'}}]};
+ const data={content:'@everyone',allowed_mentions:{parse:['everyone']},embeds:[{title:(e.cancelled?'Soirée annulée · ':e.ends_at&&Date.parse(e.ends_at)<=Date.now()?'Soirée terminée · ':!e.published?'Soirée retirée · ':'Nouvelle soirée · ')+e.game,description:e.description||'Rejoins-nous pour une nouvelle soirée jeux !',color:e.cancelled?13848932:9854207,fields:[{name:'Début',value:`<t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`,inline:true},{name:'Places proposées',value:String(e.capacity),inline:true},{name:'Inscriptions',value:'[S’inscrire sur Le Multivers](https://cgasmj-blip.github.io/le-multivers/)'}],...(e.image_url?{image:{url:e.image_url}}:{}),footer:{text:'Multix · Le Multivers'}}]};
  if(e.announcement_message_id&&e.announcement_channel_id===channel){await discord(`/channels/${channel}/messages/${e.announcement_message_id}`,'PATCH',{...data,allowed_mentions:{parse:[]}});return {ok:true};}
  if(e.cancelled||!e.published)return {skipped:true};
  const message=await discord(`/channels/${channel}/messages`,'POST',data);
@@ -68,7 +77,7 @@ async function syncRoles(){
  let changed=0,failed=0;
  try{
  const rows=await db('rpc/mv_due_roles','POST',{});
- for(const row of rows){const e=row.mv_events;const desired=row.registered&&e.published&&!e.cancelled&&Date.now()>=Date.parse(e.starts_at)&&Date.now()<Date.parse(e.ends_at);
+ for(const row of rows){const e=row.mv_events;const desired=row.registered&&e.published&&!e.cancelled&&Date.now()>=Date.parse(e.starts_at)&&(!e.ends_at||Date.now()<Date.parse(e.ends_at));
  if(desired===row.role_granted)continue;
  try{if(!e.role_id)throw new Error('Le rôle de la soirée manque');
  await discord(`/guilds/${GUILD}/members/${row.mv_profiles.discord_id}/roles/${e.role_id}`,desired?'PUT':'DELETE');
@@ -120,9 +129,11 @@ Deno.serve(async req=>{
  if(channel.guild_id!==GUILD||![0,5].includes(channel.type))throw new HttpError('Choisis un canal texte de ce serveur');
  await db('mv_settings?id=eq.true','PATCH',{roster_channel_id:b.channel_id});
  }else if(action==='send-roster')result=await notifyRoster(uuid(b.event_id));
- else if(action==='save-event'){
- const [start,end]=dates(b.starts_at,b.ends_at);const capacity=Number(b.capacity);if(!Number.isInteger(capacity)||capacity<1||capacity>100)throw new HttpError('Nombre de places invalide');
- const data={game:text(b.game),description:typeof b.description==='string'?b.description.slice(0,2000):'',image_url:image(b.image_url),starts_at:start,ends_at:end,capacity,published:b.published===true,cancelled:b.cancelled===true,sort_order:Number.isInteger(Number(b.sort_order))?Number(b.sort_order):0};
+ else if(action==='finish-event'){
+ await db('rpc/mv_finish_event','POST',{p_event:uuid(b.event_id)});result={ok:true,sync:await syncRoles(),notification:await safeNotify(uuid(b.event_id)),announcement:await safeAnnouncement(uuid(b.event_id))};
+ }else if(action==='save-event'){
+ const start=new Date(b.starts_at);if(!Number.isFinite(+start))throw new HttpError('Date de début invalide');const capacity=Number(b.capacity);if(!Number.isInteger(capacity)||capacity<1||capacity>100)throw new HttpError('Nombre de places invalide');
+ const data={game:text(b.game),description:typeof b.description==='string'?b.description.slice(0,2000):'',image_url:image(b.image_url),starts_at:start.toISOString(),capacity,published:b.published===true,cancelled:b.cancelled===true,sort_order:Number.isInteger(Number(b.sort_order))?Number(b.sort_order):0};
  let e;if(b.id){e=(await db(`mv_events?id=eq.${uuid(b.id)}`))[0];if(!e)throw new HttpError('Soirée introuvable',404);const count=await db(`mv_registrations?event_id=eq.${e.id}&registered=eq.true`);if(count.length>capacity)throw new HttpError('La capacité est inférieure au nombre d’inscrits');}
  // Roles/channels are bot-created, never arbitrary permission-bearing roles supplied by a client.
  if(data.published&&!e?.role_id){

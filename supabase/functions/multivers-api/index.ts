@@ -82,12 +82,12 @@ async function eventCategory(){
 async function ensureResources(eventId){
  let e=(await db(`mv_events?id=eq.${eventId}`))[0];
  if(!e||!e.published||e.cancelled||(e.ends_at&&Date.parse(e.ends_at)<=Date.now()))return;
- if(e.resources_owned&&e.role_id&&e.channel_id&&!e.channel_closed)return;
+ if(e.resources_owned&&e.role_id&&!e.role_deleted&&e.channel_id&&!e.channel_closed)return;
  if(!await db('rpc/mv_claim_resources','POST',{p_event:eventId}))throw new HttpError('Création du vocal déjà en cours. Réessaie dans un instant.',409);
  try{
  const parent=await eventCategory();
- if(!e.resources_owned||!e.role_id){const role=await discord(`/guilds/${GUILD}/roles`,'POST',{name:('⭐・Soirée — '+e.game).slice(0,100),permissions:'0',mentionable:false});
- await db(`mv_events?id=eq.${eventId}`,'PATCH',{role_id:role.id,resources_owned:true});e.role_id=role.id;}
+ if(!e.resources_owned||!e.role_id||e.role_deleted){const role=await discord(`/guilds/${GUILD}/roles`,'POST',{name:('⭐・Soirée — '+e.game).slice(0,100),permissions:'0',mentionable:false});
+ await db(`mv_events?id=eq.${eventId}`,'PATCH',{role_id:role.id,resources_owned:true,role_deleted:false});e.role_id=role.id;}
  const bot=await discord('/users/@me');
  const channel=await discord(`/guilds/${GUILD}/channels`,'POST',{name:('⭐・'+e.game).slice(0,100),type:2,parent_id:parent,permission_overwrites:[{id:GUILD,type:0,deny:'1049600',allow:'0'},{id:e.role_id,type:0,allow:'1049600',deny:'0'},{id:bot.id,type:1,allow:'1049600',deny:'0'}]});
  await db(`mv_events?id=eq.${eventId}`,'PATCH',{channel_id:channel.id,channel_closed:false,resource_error:null});
@@ -95,12 +95,21 @@ async function ensureResources(eventId){
  finally{await db(`mv_events?id=eq.${eventId}`,'PATCH',{resources_busy_until:null});}
 }
 async function closeFinishedVocals(){
- const events=await db('mv_events?resources_owned=eq.true&channel_closed=eq.false&channel_id=not.is.null');
+ const events=await db('mv_events?resources_owned=eq.true&or=(channel_closed.eq.false,role_deleted.eq.false)');
  let closed=0,failed=0;
  for(const e of events){if(e.published&&!e.cancelled&&(!e.ends_at||Date.parse(e.ends_at)>Date.now()))continue;
- try{const channel=await discord(`/channels/${e.channel_id}`);if(channel.guild_id!==GUILD||channel.type!==2)throw new Error('Le canal à fermer n’est pas le vocal prévu.');await discord(`/channels/${e.channel_id}`,'DELETE');
- await db(`mv_events?id=eq.${e.id}`,'PATCH',{channel_closed:true,resource_error:null});closed++;
- }catch(err){if(err.status===403){await db(`mv_events?id=eq.${e.id}`,'PATCH',{channel_closed:true,resource_error:null});closed++;}else{failed++;await db(`mv_events?id=eq.${e.id}`,'PATCH',{resource_error:err.message});}}
+ const errors=[];
+ if(!e.channel_closed){try{
+ if(e.channel_id){const channel=await discord(`/channels/${e.channel_id}`);if(channel.guild_id!==GUILD||channel.type!==2)throw new Error('Le canal à fermer n’est pas le vocal prévu.');await discord(`/channels/${e.channel_id}`,'DELETE');}
+ await db(`mv_events?id=eq.${e.id}`,'PATCH',{channel_closed:true});closed++;
+ }catch(err){if(err.status===403){await db(`mv_events?id=eq.${e.id}`,'PATCH',{channel_closed:true});closed++;}else errors.push(err.message);}}
+ if(!e.role_deleted){try{
+ if(e.role_id)await discord(`/guilds/${GUILD}/roles/${e.role_id}`,'DELETE');
+ await db(`mv_events?id=eq.${e.id}`,'PATCH',{role_deleted:true});
+ await db(`mv_registrations?event_id=eq.${e.id}`,'PATCH',{role_granted:false,sync_error:null});
+ }catch(err){if(err.status===403){await db(`mv_events?id=eq.${e.id}`,'PATCH',{role_deleted:true});await db(`mv_registrations?event_id=eq.${e.id}`,'PATCH',{role_granted:false,sync_error:null});}else errors.push(err.message);}}
+ if(errors.length)failed++;
+ await db(`mv_events?id=eq.${e.id}`,'PATCH',{resource_error:errors.length?errors.join(' · '):null});
  }
  return {closed,failed};
 }

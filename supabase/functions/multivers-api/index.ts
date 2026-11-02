@@ -32,6 +32,22 @@ async function identity(req){
  await db('mv_profiles?on_conflict=user_id','POST',profile,'resolution=merge-duplicates,return=representation');
  return {user_id:user.id,discord_id:id,display_name:profile.display_name,manager:member.roles.includes(MANAGER)};
 }
+async function notifyRoster(eventId){
+ const settings=(await db('mv_settings?id=eq.true'))[0];
+ if(!settings?.roster_channel_id)return {configured:false};
+ const e=(await db(`mv_events?id=eq.${eventId}`))[0];
+ const rows=await db(`mv_registrations?event_id=eq.${eventId}&registered=eq.true&select=*,mv_profiles(discord_id)&order=updated_at.asc`);
+ const labels={present:'Présent',absent:'Absent',excused:'Excusé',unmarked:'Inscrit'};
+ const description=rows.length?rows.map((r,i)=>`${i+1}. <@${r.mv_profiles.discord_id}> · ${labels[r.attendance]||'Inscrit'}`).join('\n'):'Aucune personne inscrite pour le moment.';
+ const data={allowed_mentions:{parse:[]},embeds:[{title:(e.cancelled?'Annulée · ':'Inscrits · ')+e.game,description:description.slice(0,4096),color:9854207,fields:[{name:'Début',value:`<t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`},{name:'Participation',value:`${rows.length} / ${e.capacity} places`}],footer:{text:'Le Multivers · liste mise à jour automatiquement'}}]};
+ const channel=settings.roster_channel_id;
+ if(e.roster_message_id&&e.roster_channel_id===channel){
+ try{await discord(`/channels/${channel}/messages/${e.roster_message_id}`,'PATCH',data);return {ok:true};}catch(err){if(err.status!==403)throw err;}
+ }
+ const message=await discord(`/channels/${channel}/messages`,'POST',data);
+ await db(`mv_events?id=eq.${eventId}`,'PATCH',{roster_message_id:message.id,roster_channel_id:channel});return {ok:true};
+}
+async function safeNotify(eventId){try{return await notifyRoster(eventId)}catch(e){console.error('roster-notification',e.message);return {error:e.message}}}
 async function syncRoles(){
  // A database lease avoids overlapping cron runs; expires automatically after 90 seconds.
  const leased=await db('rpc/mv_acquire_sync','POST',{});if(!leased)return {busy:true};
@@ -76,11 +92,20 @@ Deno.serve(async req=>{
  if(action==='mine')result={registrations:await db(`mv_registrations?user_id=eq.${me.user_id}`),votes:await db(`mv_votes?user_id=eq.${me.user_id}`)};
  else if(action==='register'){
  await db('rpc/mv_register','POST',{p_event:uuid(b.event_id),p_user:me.user_id,p_registered:b.registered===true});
- result={ok:true,sync:await syncRoles()};
+ result={ok:true,sync:await syncRoles(),notification:await safeNotify(uuid(b.event_id))};
  }else if(action==='vote')await db('rpc/mv_vote','POST',{p_poll:uuid(b.poll_id),p_user:me.user_id,p_option:uuid(b.option_id)});
  else if(action!=='mine'){
  if(!me.manager)throw new HttpError('Ce rôle ne permet pas la gestion des événements.',403);
- if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)')};
+ if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)'),settings:(await db('mv_settings?id=eq.true'))[0]};
+ else if(action==='attendance'){
+ await db('rpc/mv_attendance','POST',{p_event:uuid(b.event_id),p_user:uuid(b.user_id),p_mark:b.mark});
+ result={ok:true,notification:await safeNotify(uuid(b.event_id))};
+ }else if(action==='roster-channel'){
+ if(typeof b.channel_id!=='string'||!/^\d{17,20}$/.test(b.channel_id))throw new HttpError('ID de canal invalide');
+ const channel=await discord(`/channels/${b.channel_id}`);
+ if(channel.guild_id!==GUILD||![0,5].includes(channel.type))throw new HttpError('Choisis un canal texte de ce serveur');
+ await db('mv_settings?id=eq.true','PATCH',{roster_channel_id:b.channel_id});
+ }else if(action==='send-roster')result=await notifyRoster(uuid(b.event_id));
  else if(action==='save-event'){
  const [start,end]=dates(b.starts_at,b.ends_at);const capacity=Number(b.capacity);if(!Number.isInteger(capacity)||capacity<1||capacity>100)throw new HttpError('Nombre de places invalide');
  const data={game:text(b.game),description:typeof b.description==='string'?b.description.slice(0,2000):'',image_url:image(b.image_url),starts_at:start,ends_at:end,capacity,published:b.published===true,cancelled:b.cancelled===true,sort_order:Number.isInteger(Number(b.sort_order))?Number(b.sort_order):0};
@@ -93,6 +118,7 @@ Deno.serve(async req=>{
  }
  if(e)result=(await db(`mv_events?id=eq.${e.id}`,'PATCH',data))[0];else result=(await db('mv_events','POST',data))[0];
  await syncRoles();
+ result={...result,notification:await safeNotify(result.id)};
  }else if(action==='save-poll'){
  const [start,end]=dates(b.opens_at,b.closes_at);const data={title:text(b.title),opens_at:start,closes_at:end,published:b.published===true};
  if(!Array.isArray(b.options)||b.options.length<2||b.options.length>10)throw new HttpError('Choisis entre 2 et 10 jeux');

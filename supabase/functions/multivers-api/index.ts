@@ -95,8 +95,17 @@ Deno.serve(async req=>{
  const raw=await req.text();if(raw.length>4600000)throw new HttpError('Fichier trop volumineux',413);
  let b;try{b=JSON.parse(raw)}catch{throw new HttpError('Requête invalide')}
  const action=b.action;
- if(action==='sync'||action==='check-discord'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ if(action==='test-messages'){
+ const settings=(await db('mv_settings?id=eq.true'))[0];
+ const when=Math.floor(Date.now()/1000)+3600;
+ const results=[];
+ const samples=[{channel:settings.announcement_channel_id,payload:{content:'🧪 **TEST DE PROGRAMMATION — aucune notification envoyée**\n@everyone',allowed_mentions:{parse:[]},embeds:[{title:'Nouvelle soirée · Soirée jeux du Multivers',description:'On se retrouve pour jouer ensemble, découvrir un jeu et partager de bons moments !\n\n*Message de démonstration : aucune inscription réelle.*',color:9854207,fields:[{name:'Début',value:`<t:${when}:F>`,inline:true},{name:'Places proposées',value:'3',inline:true},{name:'Inscriptions',value:'[S’inscrire sur Le Multivers](https://cgasmj-blip.github.io/le-multivers/)'}],image:{url:'https://cgasmj-blip.github.io/le-multivers/assets/multivers.webp'},footer:{text:'Multix · Le Multivers · TEST'}}]}},
+ {channel:settings.roster_channel_id,payload:{content:`## 🎮 INSCRITS · Soirée jeux du Multivers\n\n🧪 **TEST — joueurs fictifs, aucune notification envoyée**\n\n📅 **Début** · <t:${when}:F>\n👥 **Participation** · 3 / 3 places\n\n### Les joueurs\n1. **Exemple · Alex**\n2. **Exemple · Sam**\n3. **Exemple · Camille**\n\n— **Multix** · Le Multivers\nhttps://cgasmj-blip.github.io/le-multivers/assets/multivers.webp`,allowed_mentions:{parse:[]},embeds:[]}}];
+ for(const sample of samples){try{const message=await discord(`/channels/${sample.channel}/messages`,'POST',sample.payload);results.push({channel_id:sample.channel,message_id:message.id,ok:true})}catch(e){results.push({channel_id:sample.channel,ok:false,error:e.message})}}
+ return new Response(JSON.stringify({tests:results}),{headers:cors});
+ }
  if(action==='check-discord'){
  const token=Deno.env.get('DISCORD_BOT_TOKEN')?.trim();
  if(!token)return new Response(JSON.stringify({configured:false}),{headers:cors});

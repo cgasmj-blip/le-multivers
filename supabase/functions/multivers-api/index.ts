@@ -1,0 +1,106 @@
+const GUILD='1187492291892486195', MANAGER='1564000010247475270';
+const ORIGIN='https://cgasmj-blip.github.io';
+const URL=Deno.env.get('SUPABASE_URL'), KEY=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+const cors={'Access-Control-Allow-Origin':ORIGIN,'Access-Control-Allow-Headers':'authorization, apikey, content-type, x-cron-secret','Access-Control-Allow-Methods':'POST, OPTIONS','Vary':'Origin','Content-Type':'application/json','Cache-Control':'no-store'};
+class HttpError extends Error { constructor(message,status=400){super(message);this.status=status} }
+async function db(path,method='GET',body,prefer='return=representation'){
+ const r=await fetch(`${URL}/rest/v1/${path}`,{method,headers:{apikey:KEY,Authorization:`Bearer ${KEY}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)});
+ const text=await r.text(); const data=text?JSON.parse(text):null;
+ if(!r.ok)throw new HttpError(data?.message||'Erreur de base de données',400);return data;
+}
+async function discord(path,method='GET',body){
+ const token=Deno.env.get('DISCORD_BOT_TOKEN');if(!token)throw new HttpError('Le bot Discord doit encore être configuré.',503);
+ const r=await fetch('https://discord.com/api/v10'+path,{method,headers:{Authorization:`Bot ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+ if(r.status===429)throw new HttpError('Discord est temporairement occupé. Réessaie dans quelques instants.',503);
+ if(r.status===404)throw new HttpError('Membre ou ressource introuvable sur le serveur Discord.',403);
+ if(!r.ok)throw new HttpError('Discord refuse cette action. Vérifie les permissions et la position du bot.',502);
+ return r.status===204?null:await r.json();
+}
+function text(v,max=100){if(typeof v!=='string'||!v.trim()||v.trim().length>max)throw new HttpError('Texte invalide');return v.trim()}
+function image(v){if(!v)return '';const u=new globalThis.URL(v);if(u.protocol!=='https:')throw new HttpError('L’image doit utiliser HTTPS');return u.href}
+function dates(a,b){const start=new Date(a),end=new Date(b);if(!Number.isFinite(+start)||!Number.isFinite(+end)||end<=start)throw new HttpError('Dates ou heures invalides');return [start.toISOString(),end.toISOString()]}
+function uuid(v){if(typeof v!=='string'||!/^[a-f0-9-]{36}$/i.test(v))throw new HttpError('Identifiant invalide');return v}
+async function identity(req){
+ const auth=req.headers.get('authorization');if(!auth?.startsWith('Bearer '))throw new HttpError('Connecte-toi avec Discord.',401);
+ const r=await fetch(`${URL}/auth/v1/user`,{headers:{apikey:KEY,Authorization:auth}});if(!r.ok)throw new HttpError('Session expirée. Reconnecte-toi.',401);
+ const user=await r.json();const di=user.identities?.find(i=>i.provider==='discord');const id=di?.provider_id||di?.identity_data?.provider_id||di?.identity_data?.sub;
+ if(!id||!/^\d{17,20}$/.test(id))throw new HttpError('Une connexion Discord est requise.',403);
+ const member=await discord(`/guilds/${GUILD}/members/${id}`);
+ const profile={user_id:user.id,discord_id:id,display_name:member.nick||member.user.global_name||member.user.username};
+ await db('mv_profiles?on_conflict=user_id','POST',profile,'resolution=merge-duplicates,return=representation');
+ return {user_id:user.id,discord_id:id,display_name:profile.display_name,manager:member.roles.includes(MANAGER)};
+}
+async function syncRoles(){
+ // A database lease avoids overlapping cron runs; expires automatically after 90 seconds.
+ const leased=await db('rpc/mv_acquire_sync','POST',{});if(!leased)return {busy:true};
+ let changed=0,failed=0;
+ try{
+ const rows=await db('rpc/mv_due_roles','POST',{});
+ for(const row of rows){const e=row.mv_events;const desired=row.registered&&e.published&&!e.cancelled&&Date.now()>=Date.parse(e.starts_at)&&Date.now()<Date.parse(e.ends_at);
+ if(desired===row.role_granted)continue;
+ try{if(!e.role_id)throw new Error('Le rôle de la soirée manque');
+ await discord(`/guilds/${GUILD}/members/${row.mv_profiles.discord_id}/roles/${e.role_id}`,desired?'PUT':'DELETE');
+ await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{role_granted:desired,sync_error:null});changed++;
+ }catch(err){failed++;await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{sync_error:String(err.message).slice(0,300)});}
+ }
+ return {changed,failed};
+ }finally{await db('rpc/mv_release_sync','POST',{});}
+}
+Deno.serve(async req=>{
+ if(req.method==='OPTIONS')return new Response(null,{headers:cors});
+ try{
+ if(req.method!=='POST')throw new HttpError('Méthode non autorisée',405);
+ if(Number(req.headers.get('content-length'))>4600000)throw new HttpError('Fichier trop volumineux',413);
+ const raw=await req.text();if(raw.length>4600000)throw new HttpError('Fichier trop volumineux',413);
+ let b;try{b=JSON.parse(raw)}catch{throw new HttpError('Requête invalide')}
+ const action=b.action;
+ if(action==='sync'){
+ const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ return new Response(JSON.stringify(await syncRoles()),{headers:cors});
+ }
+ const me=await identity(req);
+ if(action==='me')return new Response(JSON.stringify(me),{headers:cors});
+ let result={ok:true};
+ if(action==='mine')result={registrations:await db(`mv_registrations?user_id=eq.${me.user_id}`),votes:await db(`mv_votes?user_id=eq.${me.user_id}`)};
+ else if(action==='register'){
+ await db('rpc/mv_register','POST',{p_event:uuid(b.event_id),p_user:me.user_id,p_registered:b.registered===true});
+ result={ok:true,sync:await syncRoles()};
+ }else if(action==='vote')await db('rpc/mv_vote','POST',{p_poll:uuid(b.poll_id),p_user:me.user_id,p_option:uuid(b.option_id)});
+ else if(action!=='mine'){
+ if(!me.manager)throw new HttpError('Ce rôle ne permet pas la gestion des événements.',403);
+ if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)')};
+ else if(action==='save-event'){
+ const [start,end]=dates(b.starts_at,b.ends_at);const capacity=Number(b.capacity);if(!Number.isInteger(capacity)||capacity<1||capacity>100)throw new HttpError('Nombre de places invalide');
+ const data={game:text(b.game),description:typeof b.description==='string'?b.description.slice(0,2000):'',image_url:image(b.image_url),starts_at:start,ends_at:end,capacity,published:b.published===true,cancelled:b.cancelled===true,sort_order:Number.isInteger(Number(b.sort_order))?Number(b.sort_order):0};
+ let e;if(b.id){e=(await db(`mv_events?id=eq.${uuid(b.id)}`))[0];if(!e)throw new HttpError('Soirée introuvable',404);const count=await db(`mv_registrations?event_id=eq.${e.id}&registered=eq.true`);if(count.length>capacity)throw new HttpError('La capacité est inférieure au nombre d’inscrits');}
+ // Roles/channels are bot-created, never arbitrary permission-bearing roles supplied by a client.
+ if(data.published&&!e?.role_id){
+ const role=await discord(`/guilds/${GUILD}/roles`,'POST',{name:'Soirée · '+data.game,permissions:'0',mentionable:false});
+ let ch;try{const bot=await discord('/users/@me');ch=await discord(`/guilds/${GUILD}/channels`,'POST',{name:'Soirée · '+data.game,type:2,permission_overwrites:[{id:GUILD,type:0,deny:'1049600',allow:'0'},{id:role.id,type:0,allow:'1049600',deny:'0'},{id:bot.id,type:1,allow:'1049600',deny:'0'}]});}catch(err){await discord(`/guilds/${GUILD}/roles/${role.id}`,'DELETE');throw err;}
+ Object.assign(data,{role_id:role.id,channel_id:ch.id});
+ }
+ if(e)result=(await db(`mv_events?id=eq.${e.id}`,'PATCH',data))[0];else result=(await db('mv_events','POST',data))[0];
+ await syncRoles();
+ }else if(action==='save-poll'){
+ const [start,end]=dates(b.opens_at,b.closes_at);const data={title:text(b.title),opens_at:start,closes_at:end,published:b.published===true};
+ if(!Array.isArray(b.options)||b.options.length<2||b.options.length>10)throw new HttpError('Choisis entre 2 et 10 jeux');
+ const options=b.options.map((o,i)=>({game:text(o.game),image_url:image(o.image_url),sort_order:i}));
+ // Atomic RPC locks the poll and refuses rewriting options once voting has started.
+ result=await db('rpc/mv_save_poll','POST',{p_id:b.id?uuid(b.id):null,p_title:data.title,p_opens:start,p_closes:end,p_published:data.published,p_options:options});
+ }else if(action==='poll-status'){
+ const id=uuid(b.id);result=await db(`mv_polls?id=eq.${id}`,'PATCH',{published:b.published===true});
+ }else if(action==='upload'){
+ if(!['image/png','image/jpeg','image/webp'].includes(b.type)||typeof b.data!=='string'||b.data.length>4200000)throw new HttpError('Image PNG, JPEG ou WebP, 3 Mo maximum');
+ const bytes=Uint8Array.from(atob(b.data),c=>c.charCodeAt(0));if(bytes.length>3145728)throw new HttpError('Image trop volumineuse');
+ const png=bytes[0]===137&&bytes[1]===80&&bytes[2]===78&&bytes[3]===71;
+ const jpg=bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
+ const webp=String.fromCharCode(...bytes.slice(0,4))==='RIFF'&&String.fromCharCode(...bytes.slice(8,12))==='WEBP';
+ if(!(b.type==='image/png'&&png||b.type==='image/jpeg'&&jpg||b.type==='image/webp'&&webp))throw new HttpError('Le contenu ne correspond pas à une image autorisée');
+ const name=crypto.randomUUID()+'.'+({'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}[b.type]);
+ const r=await fetch(`${URL}/storage/v1/object/multivers-images/${name}`,{method:'POST',headers:{Authorization:`Bearer ${KEY}`,apikey:KEY,'Content-Type':b.type},body:bytes});if(!r.ok)throw new HttpError('Impossible d’enregistrer l’image',502);
+ result={url:`${URL}/storage/v1/object/public/multivers-images/${name}`};
+ }else throw new HttpError('Action inconnue');
+ }
+ return new Response(JSON.stringify(result),{headers:cors});
+ }catch(e){console.error('multivers-api',e.status||500,e.message);return new Response(JSON.stringify({error:e instanceof HttpError?e.message:'Erreur du serveur. Réessaie dans quelques instants.'}),{status:e.status||500,headers:cors});}
+});

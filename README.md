@@ -1,3 +1,69 @@
 # Le Multivers
 
-Panel de soirées jeux Discord — installation en cours.
+Panel Discord de soirées jeux. Site statique sur GitHub Pages, données et API sur Supabase. Aucun serveur permanent et aucune dépendance JavaScript externe.
+
+## Fonctionnalités
+
+- Connexion Discord via Supabase Auth et PKCE ; renouvellement de session.
+- Accueil public : jusqu’à trois prochaines soirées publiées, votes programmés et lien Discord.
+- Inscriptions atomiques avec capacité maximale, annulation et un vote par utilisateur et scrutin.
+- Page `gestion.html` réservée au rôle Discord `1564000010247475270` du serveur `1187492291892486195`. Chaque requête administrative revérifie le rôle auprès de Discord.
+- Édition des soirées : images, descriptions, places, ordre, dates et heures locales converties en UTC, brouillons/publication/annulation.
+- Votes : jeux, images, dates et heures d’ouverture/clôture, pourcentages et liste des votants réservés aux gestionnaires.
+- Images PNG/JPEG/WebP jusqu’à 3 Mo, téléversées par l’API après autorisation.
+- À la première publication, création d’un rôle sans permissions globales et d’un canal vocal privé par soirée. Synchronisation des rôles chaque minute, avec reprise des erreurs et suivi dans la gestion. Les horaires ne garantissent donc pas une exécution à la seconde.
+
+## Installation déjà effectuée
+
+Projet Supabase réutilisé : `ighxdlztzcifezqfxeyv` (ancien nom LS Design). Les tables, politiques RLS, bucket images, tâches cron et API sont installés. La configuration navigateur ne contient qu’une clé publique. Aucune donnée fictive n’est publiée.
+
+## Configuration nécessaire avant ouverture
+
+### 1. Application et bot Discord
+
+Créer une application dans https://discord.com/developers/applications .
+
+- Ajouter cette redirection OAuth2 : `https://ighxdlztzcifezqfxeyv.supabase.co/auth/v1/callback`.
+- Inviter son bot sur le serveur `1187492291892486195` avec **Gérer les rôles**, **Gérer les salons**, **Voir les salons** et **Se connecter**. Ne pas lui donner Administrateur.
+- Placer son rôle au-dessus des rôles de soirées qu’il créera.
+- Dans Supabase > Edge Functions > Secrets, enregistrer `DISCORD_BOT_TOKEN`. Ne jamais le mettre dans GitHub, dans config.js ou dans une conversation.
+- Dans Supabase > Authentication > Sign In / Providers > Discord : activer Discord, renseigner le Client ID et le Client Secret.
+
+### 2. Redirections Supabase
+
+Dans Authentication > URL Configuration :
+
+- Site URL : `https://cgasmj-blip.github.io/le-multivers/`
+- Redirect URLs : `https://cgasmj-blip.github.io/le-multivers/` et `https://cgasmj-blip.github.io/le-multivers/gestion.html`.
+
+Ne pas activer de connexion anonyme ou d’inscription par email pour cette application Discord.
+
+### 3. GitHub Pages
+
+Le workflow `.github/workflows/pages.yml` publie l’accueil et la page de gestion. Si GitHub exige une activation manuelle, ouvrir Settings > Pages et sélectionner **GitHub Actions** comme source, puis relancer le workflow.
+
+Adresse attendue une fois le déploiement réussi : `https://cgasmj-blip.github.io/le-multivers/`.
+
+## Vérifier avant de lancer les soirées
+
+1. Se connecter avec un membre sans rôle gestionnaire : bouton de gestion absent, API administrative refusée.
+2. Se connecter avec un membre portant le rôle autorisé : accès à la gestion.
+3. Publier une soirée proche, vérifier le rôle et le canal créés, puis s’inscrire.
+4. Vérifier l’attribution dans la minute du début et le retrait après la fin ou une désinscription.
+5. Tester un vote, modifier son choix et contrôler les résultats depuis la gestion.
+
+Le retrait du rôle ferme l’accès futur au canal. Discord peut laisser un membre déjà connecté dans le vocal : les animateurs peuvent le déconnecter à la fin si nécessaire. Les administrateurs du serveur gardent leurs permissions Discord habituelles.
+
+## Structure et développement
+
+`index.html`, `gestion.html`, `app.js`, `style.css`, `config.js`, `assets/` : site public.
+
+`supabase/functions/multivers-api/index.ts` : API Edge sans dépendances ; vérifie la session via `/auth/v1/user` et le rôle via l’API Discord. `verify_jwt=false` sur la passerelle est intentionnel : la fonction réalise elle-même l’authentification des utilisateurs et du cron.
+
+`schema.sql` et `roles-due.sql` documentent les migrations déjà appliquées. Ne pas les réexécuter sur le projet installé. `tests/database.sql` teste les contraintes dans une transaction annulée.
+
+Vérification locale : `node --check app.js`, `node --test tests/api.test.cjs` ; aperçu avec `python3 -m http.server 8000`. Les redirections locales doivent être autorisées séparément pour tester OAuth localement.
+
+## Limites et maintenance
+
+Les images téléversées sont publiques. Les participations, identifiants Discord et votes détaillés ne sont accessibles qu’à leur utilisateur via l’API ou aux gestionnaires autorisés. Aucun accès direct en écriture aux tables n’est accordé au navigateur. La synchronisation traite jusqu’à 50 changements de rôle par minute ; les erreurs Discord restent visibles et sont réessayées. Les ressources Discord créées restent sur le serveur après la soirée ; les inscriptions annulées sont conservées pour retirer les rôles et assurer le suivi.

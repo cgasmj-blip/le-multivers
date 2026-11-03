@@ -72,7 +72,13 @@ async function notifyAnnouncement(eventId){
 }
 async function safeAnnouncement(id){try{return await notifyAnnouncement(id)}catch(e){console.error('event-announcement',e.message);return {error:e.message}}}
 async function safeNotify(eventId){try{return await notifyRoster(eventId)}catch(e){console.error('roster-notification',e.message);return {error:e.message}}}
-function voiceName(game){const styled=Array.from(game.normalize('NFKD').toUpperCase(),c=>{const n=c.codePointAt(0);if(n>=65&&n<=90)return String.fromCodePoint(0x1D400+n-65);if(n>=48&&n<=57)return String.fromCodePoint(0x1D7CE+n-48);return c}).join('');return Array.from('⭐・'+styled).slice(0,100).join('')}
+function channelTypography(value,category=false){let base=value.normalize('NFKD');if(category)base=base.toUpperCase();else{let capitalized=false;base=Array.from(base.toLowerCase(),c=>{if(!capitalized&&/\p{L}/u.test(c)){capitalized=true;return c.toUpperCase()}return c}).join('')}return Array.from(base,c=>{const n=c.codePointAt(0);if(n>=65&&n<=90)return String.fromCodePoint(0x1D400+n-65);if(n>=97&&n<=122)return String.fromCodePoint(0x1D41A+n-97);if(n>=48&&n<=57)return String.fromCodePoint(0x1D7CE+n-48);return c}).slice(0,100).join('')}
+function voiceName(game){return channelTypography('⭐・'+game)}
+async function normalizeGuildChannels(){
+ const channels=await discord(`/guilds/${GUILD}/channels`);const pending=channels.filter(c=>[0,2,4,5,13,15,16].includes(c.type)).map(c=>({id:c.id,name:c.name,next:channelTypography(c.name,c.type===4)})).filter(c=>c.name.normalize('NFC')!==c.next.normalize('NFC'));
+ const results=[];for(const c of pending.slice(0,10)){try{await discord(`/channels/${c.id}`,'PATCH',{name:c.next});results.push({channel_id:c.id,name:c.next,ok:true})}catch(e){results.push({channel_id:c.id,ok:false,error:e.message});if(e.status===503)break;}}
+ return {updated:results.filter(r=>r.ok).length,remaining:pending.length-results.filter(r=>r.ok).length,channels:results};
+}
 async function eventCategory(){
  const settings=(await db('mv_settings?id=eq.true'))[0];
  const first=await discord(`/channels/${settings.announcement_channel_id}`);
@@ -131,7 +137,7 @@ async function syncRoles(){
  try{await discord(`/guilds/${GUILD}/members/${row.mv_profiles.discord_id}/roles/${e.role_id}`,desired?'PUT':'DELETE');await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{role_granted:desired,sync_error:null});changed++;}
  catch(err){failed++;await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{sync_error:err.message});}
  }
- const cleanup=await closeFinishedVocals();const logs=await flushEventLogs();return {changed,failed:failed+cleanup.failed,closed:cleanup.closed,logs};
+ const cleanup=await closeFinishedVocals();const logs=await flushEventLogs();let typography;try{typography=await normalizeGuildChannels()}catch(e){typography={error:e.message}}return {changed,failed:failed+cleanup.failed,closed:cleanup.closed,logs,typography};
  }finally{await db('rpc/mv_release_sync','POST',{});}
 }
 Deno.serve(async req=>{
@@ -150,8 +156,9 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ if(action==='normalize-channels')return new Response(JSON.stringify(await normalizeGuildChannels()),{headers:cors});
  if(action==='rename-event-voices'){
  const events=await db('mv_events?resources_owned=eq.true&channel_closed=eq.false&channel_id=not.is.null');const results=[];
  for(const e of events){try{const channel=await discord(`/channels/${e.channel_id}`);if(channel.guild_id!==GUILD||channel.type!==2)throw new HttpError('Ce canal ne correspond pas au vocal prévu.',400);const name=voiceName(e.game);if(channel.name!==name)await discord(`/channels/${e.channel_id}`,'PATCH',{name});results.push({channel_id:e.channel_id,name,ok:true});}catch(err){results.push({channel_id:e.channel_id,ok:false,error:err.message});}}

@@ -49,7 +49,7 @@ function badgeCard(b,member){
  const earned=member?.earned.includes(b.id),card=node('article','badge-card'+(member&&!earned?' badge-locked':''));
  const img=node('img','badge-art');img.src='assets/badges/'+b.id+'.png';img.alt=b.name;img.loading='lazy';img.width=180;img.height=180;
  card.append(img,node('h3','',b.name),node('p','muted',b.description));
- if(member){const text=earned?(member.is_founder?'✦ Débloqué · Fondateur':'✓ Débloqué'):b.metric?Math.min(Number(member[b.metric]),b.goal)+' / '+b.goal+(b.metric==='games'?' jeux':' soirées'):'À recevoir des fondateurs';card.append(node('span','badge-state',text));}
+ if(member){const text=earned?('✦ Débloqué'):b.metric?Math.min(Number(member[b.metric]),b.goal)+' / '+b.goal+(b.metric==='games'?' jeux':' soirées'):'À recevoir des fondateurs';card.append(node('span','badge-state',text));}
  return card;
 }
 async function refreshBadges(){try{await loadBadges()}catch(e){if($('#badge-caption'))$('#badge-caption').textContent='La collection est momentanément indisponible.';console.error('badges',e.message)}}
@@ -58,10 +58,10 @@ async function loadBadges(){
  if(!me){root.replaceChildren(...BADGES.map(b=>badgeCard(b)));$('#badge-caption').textContent='Connecte-toi pour retrouver ta collection. Les présences validées débloquent les badges automatiquement.';$('#badge-community').replaceChildren();return;}
  const result=await api('badges'),self=result.members.find(m=>m.user_id===result.self);
  root.replaceChildren(...BADGES.map(b=>badgeCard(b,self)));
- $('#badge-caption').textContent=self?.is_founder?'Les fondateurs disposent des cinq Reliques cosmiques.':(self?.sessions||0)+' soirée(s) jouée(s) · '+(self?.games||0)+' jeu(x) différent(s). Seules les présences validées comptent, hors soirées de test et annulées.';
+ $('#badge-caption').textContent=self?.is_founder?'':(self?.sessions||0)+' soirée(s) jouée(s) · '+(self?.games||0)+' jeu(x) différent(s). Seules les présences validées comptent, hors soirées de test et annulées.';
  const community=$('#badge-community');community.replaceChildren(node('h3','','Les collections de la communauté'));
  for(const member of result.members){
- const row=node('div','member-badges'),head=node('div','member-badge-name');head.append(node('strong','',member.display_name));if(member.is_founder)head.append(node('span','tag','Fondateur'));row.append(head);
+ const row=node('div','member-badges'),head=node('div','member-badge-name');head.append(node('strong','',member.display_name));row.append(head);
  const badges=node('div','member-badge-icons');
  for(const b of BADGES){const earned=member.earned.includes(b.id);const img=node('img',earned?'':'badge-muted');img.src='assets/badges/'+b.id+'.png';img.alt=b.name+(earned?' · Débloqué':' · Non débloqué');img.title=img.alt;img.width=64;img.height=64;img.loading='lazy';badges.append(img)}row.append(badges);
  if(result.founder&&!member.is_founder){const awarded=member.heart;row.append(button(awarded?'Retirer Cœur du Multivers':'Attribuer Cœur du Multivers',async()=>{if(!await confirmHeart(member.display_name,!awarded))return;await api('grant-heart',{user_id:member.user_id,granted:!awarded});await refreshBadges();status('Badge '+(awarded?'retiré.':'attribué.'));}));}

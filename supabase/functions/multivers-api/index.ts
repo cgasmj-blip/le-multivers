@@ -137,9 +137,47 @@ async function syncRoles(){
  try{await discord(`/guilds/${GUILD}/members/${row.mv_profiles.discord_id}/roles/${e.role_id}`,desired?'PUT':'DELETE');await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{role_granted:desired,sync_error:null});changed++;}
  catch(err){failed++;await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{sync_error:err.message});}
  }
- const cleanup=await closeFinishedVocals();const logs=await flushEventLogs();let typography;try{typography=await normalizeGuildChannels()}catch(e){typography={error:e.message}}return {changed,failed:failed+cleanup.failed,closed:cleanup.closed,logs,typography};
+ const cleanup=await closeFinishedVocals();const logs=await flushEventLogs();let typography;try{typography=await normalizeGuildChannels()}catch(e){typography={error:e.message}}let community;try{community=await communityNotifications()}catch(e){community={error:e.message}}return {changed,failed:failed+cleanup.failed,closed:cleanup.closed,logs,typography,community};
  }finally{await db('rpc/mv_release_sync','POST',{});}
 }
+async function setupCommunity(){
+ const parent=await eventCategory();let channels=await discord(`/guilds/${GUILD}/channels`);const settings=(await db('mv_settings?id=eq.true'))[0];
+ const specs=[['reminder_channel_id','🔔・Rappels'],['winner_channel_id','🏆・Jeu gagnant'],['weekly_channel_id','📅・Planning'],['feedback_channel_id','💬・Bilans des soirées']];const patch={};
+ for(const [key,label] of specs){const name=channelTypography(label);let ch=channels.find(c=>c.id===settings[key])||channels.find(c=>c.parent_id===parent&&c.type===0&&c.name.normalize('NFKC').toLowerCase()===name.normalize('NFKC').toLowerCase());
+ if(!ch){ch=await discord(`/guilds/${GUILD}/channels`,'POST',{name,type:0,parent_id:parent});channels.push(ch)}patch[key]=ch.id;}
+ const suggestions=channels.find(c=>{const n=c.name.normalize('NFKD').toLowerCase();return n.includes('suggest')&&n.includes('jeu')});if(suggestions)patch.suggestions_channel_id=suggestions.id;
+ const app=await discord('/oauth2/applications/@me');if(app.verify_key)patch.discord_public_key=app.verify_key;
+ await db('mv_settings?id=eq.true','PATCH',patch);
+ const roster=channels.find(c=>c.id===settings.roster_channel_id);if(roster){const base=roster.position;const ordered=specs.map(([key],i)=>({id:patch[key],position:base+1+i}));await discord(`/guilds/${GUILD}/channels`,'PATCH',ordered)}
+ const command=await discord(`/applications/1566913973687812286/guilds/${GUILD}/commands`,'POST',{name:'equipes',description:'Répartit par écrit les personnes présentes dans ce vocal.',type:1,options:[{type:4,name:'nombre',description:'Nombre d’équipes (2 par défaut)',required:false,min_value:2,max_value:10}]});
+ let interactions;try{await discord('/applications/@me','PATCH',{interactions_endpoint_url:'https://ighxdlztzcifezqfxeyv.supabase.co/functions/v1/multivers-interactions'});interactions={active:true};}catch(e){interactions={active:false,error:e.message}}
+ return {channels:patch,command_id:command.id,interactions,interactions_endpoint:'https://ighxdlztzcifezqfxeyv.supabase.co/functions/v1/multivers-interactions'};
+}
+async function sendOnce(key,channel,payload){
+ if(!channel)return {configured:false};if(!await db('rpc/mv_claim_notification','POST',{p_key:key}))return {already_sent:true};
+ try{const message=await discord(`/channels/${channel}/messages`,'POST',payload);await db(`mv_notifications?key=eq.${encodeURIComponent(key)}`,'PATCH',{message_id:message.id,error:null});return {ok:true,message_id:message.id}}
+ catch(e){await db(`mv_notifications?key=eq.${encodeURIComponent(key)}`,'PATCH',{error:e.message});return {error:e.message}}
+}
+async function communityNotifications(){
+ const settings=(await db('mv_settings?id=eq.true'))[0];let sent=0,failed=0;const results=[];
+ const events=await db('mv_events?published=eq.true&cancelled=eq.false&ends_at=is.null&order=starts_at.asc');
+ for(const e of events){const start=Date.parse(e.starts_at);if(Date.now()<start-1800000||Date.now()>=start)continue;
+ const regs=await db(`mv_registrations?event_id=eq.${e.id}&registered=eq.true&select=mv_profiles(discord_id)`);const ids=regs.map(r=>r.mv_profiles.discord_id);
+ for(let i=0;i<ids.length;i+=60){const group=ids.slice(i,i+60);const result=await sendOnce(`reminder:${e.id}:${i/60}`,settings.reminder_channel_id,{content:group.map(id=>`<@${id}>`).join(' '),allowed_mentions:{parse:[],users:group},embeds:[{title:'🔔 La soirée commence bientôt · '+e.game,description:`Rendez-vous <t:${Math.floor(start/1000)}:R> !\n\n`+(e.channel_id?`[Rejoindre le vocal](https://discord.com/channels/${GUILD}/${e.channel_id})`:'[Ouvrir Le Multivers](https://cgasmj-blip.github.io/le-multivers/)'),...(e.image_url?{image:{url:e.image_url}}:{}),footer:{text:'Multix · Bon jeu à tous !'}}]});results.push(result);}
+ }
+ // Only newly closed polls are announced, with a 7-day recovery window.
+ const polls=await db('mv_polls?published=eq.true&select=*,mv_options(*)&closes_at=gte.'+encodeURIComponent(settings.features_live_at)+'&closes_at=lte.'+encodeURIComponent(new Date().toISOString())+'&closes_at=gte.'+encodeURIComponent(new Date(Date.now()-7*86400000).toISOString()));
+ for(const p of polls){const votes=await db(`mv_votes?poll_id=eq.${p.id}&select=option_id`);if(!votes.length)continue;const scores=p.mv_options.map(o=>({...o,count:votes.filter(v=>v.option_id===o.id).length})).sort((a,b)=>b.count-a.count);const winners=scores.filter(o=>o.count===scores[0]?.count);const desc=scores.map(o=>`**${o.game}** · ${o.count} vote(s) · ${Math.round(o.count/votes.length*100)} %`).join('\n');results.push(await sendOnce('winner:'+p.id,settings.winner_channel_id,{allowed_mentions:{parse:[]},embeds:[{title:'🏆 '+(winners.length>1?'Égalité pour le jeu de la semaine':'Le jeu gagnant · '+winners[0].game),description:(winners.length>1?'Jeux à égalité : '+winners.map(w=>w.game).join(', ')+'\n\n':'')+desc,color:15844367,...(winners.length===1&&winners[0].image_url?{image:{url:winners[0].image_url}}:{}),footer:{text:`Multix · ${votes.length} votant(s)`}}]}));}
+ const finished=await db('mv_events?cancelled=eq.false&ends_at=not.is.null&ends_at=gte.'+encodeURIComponent(settings.features_live_at));
+ for(const e of finished){if(Date.parse(e.ends_at)>Date.now())continue;results.push(await sendOnce('feedback:'+e.id,settings.feedback_channel_id,{allowed_mentions:{parse:[]},content:'## 💬 Bilan · '+e.game+'\nLa soirée est terminée ! Qu’en as-tu pensé ?\nClique sur le bouton pour donner une note et laisser un commentaire aux animateurs.',components:[{type:1,components:[{type:2,style:1,label:'Donner mon avis',custom_id:'review:'+e.id}]}]}));}
+ const now=new Date(),parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Paris',weekday:'short',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(now).map(x=>[x.type,x.value]));
+ if(parts.weekday==='Sun'&&Number(parts.hour)>=18){const upcoming=events.filter(e=>Date.parse(e.starts_at)>Date.now()&&Date.parse(e.starts_at)<Date.now()+8*86400000);const active=await db('mv_polls?published=eq.true&select=*,mv_options(*)&closes_at=gt.'+encodeURIComponent(now.toISOString()));
+ const programme=upcoming.length?upcoming.map(e=>`• **${e.game}** — <t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`).join('\n'):'Les prochaines soirées seront annoncées ici.';
+ const choices=active.length?active.map(p=>`**${p.title}** : ${p.mv_options.map(o=>o.game).join(', ')}`).join('\n'):'Les propositions pour le prochain vote arrivent bientôt.';
+ results.push(await sendOnce(`weekly:${parts.year}-${parts.month}-${parts.day}`,settings.weekly_channel_id,{allowed_mentions:{parse:[]},embeds:[{title:'📅 Cette semaine dans Le Multivers',description:('### Les soirées à venir\n'+programme+'\n\n### Les jeux proposés au vote\n'+choices+'\n\n[Voir le panel](https://cgasmj-blip.github.io/le-multivers/)'+(settings.suggestions_channel_id?` · [Suggérer un jeu](https://discord.com/channels/${GUILD}/${settings.suggestions_channel_id})`:'')).slice(0,4096),color:9854207,footer:{text:'Multix · Votre rendez-vous du dimanche à 18 h'}}]}));}
+ for(const r of results){if(r.ok)sent++;if(r.error)failed++;}return {sent,failed};
+}
+
 Deno.serve(async req=>{
  if(req.method==='OPTIONS')return new Response(null,{headers:cors});
  try{
@@ -156,8 +194,9 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ if(action==='setup-community')return new Response(JSON.stringify(await setupCommunity()),{headers:cors});
  if(action==='normalize-channels')return new Response(JSON.stringify(await normalizeGuildChannels()),{headers:cors});
  if(action==='rename-event-voices'){
  const events=await db('mv_events?resources_owned=eq.true&channel_closed=eq.false&channel_id=not.is.null');const results=[];
@@ -210,7 +249,7 @@ Deno.serve(async req=>{
  }else if(action==='vote')await db('rpc/mv_vote','POST',{p_poll:uuid(b.poll_id),p_user:me.user_id,p_option:uuid(b.option_id)});
  else if(action!=='mine'){
  if(!me.manager)throw new HttpError('Ce rôle ne permet pas la gestion des événements.',403);
- if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)'),settings:(await db('mv_settings?id=eq.true'))[0]};
+ if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)'),settings:(await db('mv_settings?id=eq.true'))[0],profiles:await db('mv_profiles?select=user_id,blocked_until'),feedback:await db('mv_feedback?select=*,mv_events(game)&order=created_at.desc')};
  else if(action==='attendance'){
  await db('rpc/mv_attendance','POST',{p_event:uuid(b.event_id),p_user:uuid(b.user_id),p_mark:b.mark});
  result={ok:true,notification:await safeNotify(uuid(b.event_id))};
@@ -257,3 +296,4 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(result),{headers:cors});
  }catch(e){console.error('multivers-api',e.status||500,e.message);return new Response(JSON.stringify({error:e instanceof HttpError?e.message:'Erreur du serveur. Réessaie dans quelques instants.'}),{status:e.status||500,headers:cors});}
 });
+

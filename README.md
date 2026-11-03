@@ -67,3 +67,19 @@ Vérification locale : `node --check app.js`, `node --test tests/api.test.cjs` ;
 ## Limites et maintenance
 
 Les images téléversées sont publiques. Les participations, identifiants Discord et votes détaillés ne sont accessibles qu’à leur utilisateur via l’API ou aux gestionnaires autorisés. Aucun accès direct en écriture aux tables n’est accordé au navigateur. La synchronisation traite jusqu’à 50 changements de rôle par minute ; les erreurs Discord restent visibles et sont réessayées. Les ressources Discord créées restent sur le serveur après la soirée ; les inscriptions annulées sont conservées pour retirer les rôles et assurer le suivi.
+
+## Ajouts communautaires
+
+- Canaux permanents dans la catégorie événements : Rappels, Jeu gagnant, Planning, Bilans des soirées. Le canal Suggestions de jeux existant est réutilisé.
+- Rappels : une notification des inscrits dans les 30 minutes avant le début, avec lien du vocal. Déduplication par soirée.
+- Résultats : annonce à la clôture d’un vote, pourcentages et gestion des égalités ; aucune annonce de gagnant sans vote.
+- Planning : le dimanche à 18 h Europe/Paris, soirées de la semaine et jeux proposés au vote. Déduplication par dimanche.
+- Absences : seuls les statuts `absent` explicitement renseignés comptent. Chaque groupe de trois absences non excusées déclenche sept jours de blocage des nouvelles inscriptions. Les votes restent accessibles. Une correction qui ramène le total sous le seuil retire le blocage correspondant. L’expiration ne redéclenche pas la même sanction.
+- Bilans : message permanent dans Bilans des soirées après une fin manuelle. Le bouton ouvre un formulaire Discord (note de 1 à 5 et commentaire destiné aux animateurs), réservé aux inscrits. Les avis se consultent dans les statistiques du panel.
+- `/equipes nombre:2` : à utiliser dans le chat du vocal, en étant connecté à ce vocal. Répartition écrite des membres actuellement connectés, bots exclus, sans déplacement. Le bot prend un instantané via une courte connexion Gateway puis se déconnecte. Limitation à un tirage par minute sur le serveur et protection du quota de connexions Discord.
+
+`supabase/functions/multivers-interactions/index.ts` valide les signatures Ed25519 et les timestamps Discord avant de répondre aux commandes et formulaires. Le token reste uniquement dans les secrets Supabase. La clé publique de vérification est obtenue depuis l’application Discord puis stockée dans les réglages, accessibles uniquement au serveur.
+
+L’endpoint d’interactions est configuré sur l’application Discord et la commande est enregistrée au niveau du serveur. Aucune session Gateway permanente n’est utilisée : cela ne met pas Multix en ligne en continu et ne détecte pas automatiquement les départs d’un vocal.
+
+Tests : `node --test tests/api.test.cjs tests/interactions.test.cjs`.

@@ -273,7 +273,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'||action==='audit-role-emojis'||action==='fix-role-emojis'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -295,6 +295,14 @@ Deno.serve(async req=>{
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
  }
+ if(action==='fix-role-emojis'){
+ const edits=[['1187492291913465914','🌌・Voyageur','🌠・Voyageur'],['1385037509469409462','💎・Booster','🚀・Booster'],['1564000799078621204','🏆・Vétéran','🎖️・Vétéran']];
+ const roles=await discord(`/guilds/${GUILD}/roles`),changes=[];
+ for(const [id,before,after] of edits){const role=roles.find(r=>r.id===id);if(!role){changes.push({id,error:'Rôle introuvable'});continue;}if(role.name!==before&&role.name!==after){changes.push({id,error:'Nom modifié depuis la vérification'});continue;}
+ try{if(role.name!==after)await discord(`/guilds/${GUILD}/roles/${id}`,'PATCH',{name:after});changes.push({id,before,after,ok:true});}catch(e){changes.push({id,error:e.message});}}
+ return new Response(JSON.stringify({changes}),{headers:cors});
+ }
+ if(action==='audit-role-emojis'){const roles=await discord(`/guilds/${GUILD}/roles`);return new Response(JSON.stringify({roles:roles.map(r=>({id:r.id,name:r.name,managed:r.managed,position:r.position})),badges:await db('mv_badge_discord')}),{headers:cors});}
  if(action==='setup-badge-discord')return new Response(JSON.stringify(await setupBadgeDiscord(b.images)),{headers:cors});
  if(action==='inspect-voice-setup'){
  const channels=await discord(`/guilds/${GUILD}/channels`);const bot=await discord('/users/@me');const member=await discord(`/guilds/${GUILD}/members/${bot.id}`);const roles=await discord(`/guilds/${GUILD}/roles`);

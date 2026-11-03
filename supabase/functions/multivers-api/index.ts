@@ -235,7 +235,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -256,6 +256,11 @@ Deno.serve(async req=>{
  for(const id of ids){const profile=(await db(`mv_profiles?discord_id=eq.${id}`))[0];if(profile){try{await db('rpc/mv_register','POST',{p_event:event.id,p_user:profile.user_id,p_registered:true});restored.push(id)}catch(e){failed.push({discord_id:id,error:e.message})}}}
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
+ }
+ if(action==='clear-community-tests'){
+ const targets=[['1567128132299915329','1567204122787324050'],['1567128134682148936','1567204125085798471'],['1567128136506937416','1567204126490763475'],['1567128137853046864','1567204128210296843']];const results=[];
+ for(const [channel,id] of targets){try{await discord(`/channels/${channel}/messages/${id}`,'DELETE');results.push({message_id:id,removed:true})}catch(e){results.push({message_id:id,removed:e.status===403,error:e.status===403?null:e.message})}}
+ return new Response(JSON.stringify({tests:results}),{headers:cors});
  }
  if(action==='test-community-messages')return new Response(JSON.stringify(await testCommunityMessages()),{headers:cors});
  if(action==='setup-community')return new Response(JSON.stringify(await setupCommunity()),{headers:cors});

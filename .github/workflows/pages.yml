@@ -24,10 +24,7 @@ jobs:
         run: node --test tests/api.test.cjs tests/interactions.test.cjs
       - name: Préparer le site
         run: |
-          mkdir _site
-          cp index.html gestion.html style.css app.js config.js _site/
-          cp -r assets _site/
-          touch _site/.nojekyll
+          python3 build_site.py
       - uses: actions/configure-pages@v5
         with:
           enablement: true

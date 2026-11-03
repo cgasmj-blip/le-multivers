@@ -138,7 +138,7 @@ async function syncRoles(){
  try{await discord(`/guilds/${GUILD}/members/${row.mv_profiles.discord_id}/roles/${e.role_id}`,desired?'PUT':'DELETE');await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{role_granted:desired,sync_error:null});changed++;}
  catch(err){failed++;await db(`mv_registrations?event_id=eq.${row.event_id}&user_id=eq.${row.user_id}`,'PATCH',{sync_error:err.message});}
  }
- const cleanup=await closeFinishedVocals();const logs=await flushEventLogs();let typography;try{typography=await normalizeGuildChannels()}catch(e){typography={error:e.message}}let community;try{community=await communityNotifications()}catch(e){community={error:e.message}}return {changed,failed:failed+cleanup.failed,closed:cleanup.closed,logs,typography,community};
+ const cleanup=await closeFinishedVocals();const logs=await flushEventLogs();let typography;try{typography=await normalizeGuildChannels()}catch(e){typography={error:e.message}}let community;try{community=await communityNotifications()}catch(e){community={error:e.message}}return {changed,failed:failed+cleanup.failed,closed:cleanup.closed,logs,typography,community,badges:await safeBadgeSync()};
  }finally{await db('rpc/mv_release_sync','POST',{});}
 }
 async function deleteStat(b,me){
@@ -220,6 +220,42 @@ async function communityNotifications(){
  for(const r of results){if(r.ok)sent++;if(r.error)failed++;}return {sent,failed};
 }
 
+const BADGE_DISCORD=[
+ ['premier-voyage','✦ Premier voyage','mv_premier_voyage'],['compagnon','✦ Compagnon du Multivers','mv_compagnon'],
+ ['explorateur','✦ Explorateur des mondes','mv_explorateur'],['pilier','✦ Pilier du Multivers','mv_pilier'],
+ ['coeur','✦ Cœur du Multivers','mv_coeur']
+];
+async function setupBadgeDiscord(images=[]){
+ const roles=await discord(`/guilds/${GUILD}/roles`),emojis=await discord(`/guilds/${GUILD}/emojis`),results=[];
+ for(const [id,name,emojiName] of BADGE_DISCORD){
+ const previous=(await db(`mv_badge_discord?badge_id=eq.${id}`))[0];
+ let role=roles.find(r=>r.id===previous?.role_id)||roles.find(r=>r.name===name&&r.permissions==='0');
+ if(!role)role=await discord(`/guilds/${GUILD}/roles`,'POST',{name,permissions:'0',mentionable:false,hoist:false,color:id==='coeur'?15844367:9854207});
+ let emoji=emojis.find(e=>e.id===previous?.emoji_id)||emojis.find(e=>e.name===emojiName);
+ const image=images.find(im=>im.id===id)?.image;
+ if(!emoji&&typeof image==='string'&&image.startsWith('data:image/png;base64,')&&image.length<350000)emoji=await discord(`/guilds/${GUILD}/emojis`,'POST',{name:emojiName,image,roles:[]});
+ const mapping={badge_id:id,role_id:role.id,emoji_id:emoji?.id||null,emoji_name:emoji?.name||null};
+ await db('mv_badge_discord?on_conflict=badge_id','POST',mapping,'resolution=merge-duplicates,return=representation');results.push(mapping);
+ }
+ return {badges:results,sync:await syncBadgeRoles()};
+}
+async function syncBadgeRoles(onlyUser){
+ const mapping=await db('mv_badge_discord');if(!mapping.length)return {configured:false};
+ const profiles=await db('mv_profiles?select=user_id,discord_id,is_founder'+(onlyUser?'&user_id=eq.'+onlyUser:''));
+ const members=new Map(),failures=[];let changed=0;
+ for(const p of profiles){try{
+ const member=await discord(`/guilds/${GUILD}/members/${p.discord_id}`);members.set(p.user_id,member);
+ const founder=member.roles.includes(FOUNDER);if(founder!==p.is_founder)await db(`mv_profiles?user_id=eq.${p.user_id}`,'PATCH',{is_founder:founder});
+ }catch(e){failures.push({user_id:p.user_id,error:e.message});}}
+ const collections=await db('rpc/mv_badge_collection','POST',{});
+ for(const p of profiles){const member=members.get(p.user_id);if(!member)continue;const earned=collections.find(c=>c.user_id===p.user_id)?.earned||[];
+ for(const badge of mapping){if(!badge.role_id)continue;const desired=earned.includes(badge.badge_id),has=member.roles.includes(badge.role_id);if(desired===has)continue;
+ try{await discord(`/guilds/${GUILD}/members/${p.discord_id}/roles/${badge.role_id}`,desired?'PUT':'DELETE');changed++;}catch(e){failures.push({user_id:p.user_id,badge:badge.badge_id,error:e.message});}}
+ }
+ return {changed,failed:failures.length,failures};
+}
+async function safeBadgeSync(user){try{return await syncBadgeRoles(user)}catch(e){console.error('badge-role-sync',e.message);return {failed:1,error:e.message}}}
+
 Deno.serve(async req=>{
  if(req.method==='OPTIONS')return new Response(null,{headers:cors});
  try{
@@ -236,7 +272,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -257,6 +293,15 @@ Deno.serve(async req=>{
  for(const id of ids){const profile=(await db(`mv_profiles?discord_id=eq.${id}`))[0];if(profile){try{await db('rpc/mv_register','POST',{p_event:event.id,p_user:profile.user_id,p_registered:true});restored.push(id)}catch(e){failed.push({discord_id:id,error:e.message})}}}
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
+ }
+ if(action==='setup-badge-discord')return new Response(JSON.stringify(await setupBadgeDiscord(b.images)),{headers:cors});
+ if(action==='inspect-voice-setup'){
+ const channels=await discord(`/guilds/${GUILD}/channels`);const bot=await discord('/users/@me');const member=await discord(`/guilds/${GUILD}/members/${bot.id}`);const roles=await discord(`/guilds/${GUILD}/roles`);
+ return new Response(JSON.stringify({channels:channels.map(c=>({id:c.id,name:c.name,type:c.type,parent_id:c.parent_id,position:c.position})),bot_roles:member.roles,permissions:roles.filter(r=>r.id===GUILD||member.roles.includes(r.id)).map(r=>({name:r.name,permissions:r.permissions})),commands:await discord(`/applications/1566913973687812286/guilds/${GUILD}/commands`)}),{headers:cors});
+ }
+ if(action==='setup-profile-command'){
+ const command=await discord(`/applications/1566913973687812286/guilds/${GUILD}/commands`,'POST',{name:'profil',description:'Voir les badges et la collection cosmique d’un membre',type:1,options:[{name:'membre',description:'Le membre dont tu veux consulter les badges',type:6,required:false}]});
+ return new Response(JSON.stringify({id:command.id,name:command.name}),{headers:cors});
  }
  if(action==='sync-badge-founders'){
  const profiles=await db('mv_profiles?select=user_id,discord_id');let updated=0;
@@ -319,6 +364,7 @@ Deno.serve(async req=>{
  if(!me.founder)throw new HttpError('Seuls les fondateurs peuvent attribuer ce badge.',403);
  if(typeof b.granted!=='boolean')throw new HttpError('Attribution invalide');
  await db('rpc/mv_set_heart','POST',{p_user:uuid(b.user_id),p_granted:b.granted,p_actor:me.discord_id});
+ await safeBadgeSync(uuid(b.user_id));
  return new Response(JSON.stringify({ok:true}),{headers:cors});
  }
 
@@ -334,6 +380,7 @@ Deno.serve(async req=>{
  else if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)'),settings:(await db('mv_settings?id=eq.true'))[0],profiles:await db('mv_profiles?select=user_id,blocked_until'),feedback:await db('mv_feedback?select=*,mv_events(game)&order=created_at.desc')};
  else if(action==='attendance'){
  await db('rpc/mv_attendance','POST',{p_event:uuid(b.event_id),p_user:uuid(b.user_id),p_mark:b.mark});
+ await safeBadgeSync(uuid(b.user_id));
  result={ok:true,notification:await safeNotify(uuid(b.event_id))};
  }else if(action==='roster-channel'){
  if(typeof b.channel_id!=='string'||!/^\d{17,20}$/.test(b.channel_id))throw new HttpError('ID de canal invalide');
@@ -378,5 +425,6 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(result),{headers:cors});
  }catch(e){console.error('multivers-api',e.status||500,e.message);return new Response(JSON.stringify({error:e instanceof HttpError?e.message:'Erreur du serveur. Réessaie dans quelques instants.'}),{status:e.status||500,headers:cors});}
 });
+
 
 

@@ -34,11 +34,43 @@ async function runTeams(interaction){let content;try{
  }catch(e){content='⚠️ '+e.message}
  await fetch(`https://discord.com/api/v10/webhooks/${APP}/${interaction.token}/messages/@original`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({content,allowed_mentions:{parse:[]}})});
 }
+const PROFILE_BADGES=[
+ ['premier-voyage','Premier voyage','1 soirée jouée'],['compagnon','Compagnon du Multivers','5 soirées jouées'],
+ ['explorateur','Explorateur des mondes','5 jeux différents'],['pilier','Pilier du Multivers','20 soirées jouées'],
+ ['coeur','Cœur du Multivers','Distinction attribuée par les fondateurs']
+];
+function profileEmbeds(member,collection,mapping=[]){
+ const user=member.user,name=(member.nick||user.global_name||user.username).slice(0,100);
+ const founder=member.roles.includes('1187492291947012126');
+ const earned=founder?PROFILE_BADGES.map(b=>b[0]):collection?.earned||[];
+ const avatar=/^[a-f0-9_]+$/i.test(user.avatar||'')?`https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=128`:`https://cdn.discordapp.com/embed/avatars/${Number(BigInt(user.id)>>22n)%6}.png`;
+ const badgeEmoji=id=>{const m=mapping.find(m=>m.badge_id===id);return m?.emoji_id&&/^[0-9]{17,20}$/.test(m.emoji_id)&&/^[a-z0-9_]{2,32}$/i.test(m.emoji_name||'')?`<:${m.emoji_name}:${m.emoji_id}>`:'✦'};
+ const summary={title:'✦ Collection de '+name,color:9854207,thumbnail:{url:avatar},description:(founder?'✦ **Fondateur du Multivers**\n\n':'')+`**${earned.length} / 5 Reliques cosmiques débloquées**`,fields:[{name:'Les soirées',value:`${collection?.sessions||0} présence(s) validée(s) · ${collection?.games||0} jeu(x) différent(s)`},{name:'La collection',value:PROFILE_BADGES.map(([id,label,condition])=>`${earned.includes(id)?badgeEmoji(id):'○'} **${label}** · ${earned.includes(id)?'Débloqué':condition}`).join('\n')}],footer:{text:'Multix · Les badges reflètent les présences validées sur le panel.'}};
+ const embeds=[summary];
+ if(!collection&&!founder)summary.description+='\n\nConnecte-toi au panel pour retrouver tes participations et débloquer tes premiers badges.';
+ return embeds;
+}
+async function runProfile(i){
+ let data;try{
+ const target=i.data.options?.find(o=>o.name==='membre')?.value||i.member.user.id;
+ if(typeof target!=='string'||!/^\d{17,20}$/.test(target))throw new Error('Membre invalide.');
+ const member=await discord(`/guilds/${GUILD}/members/${target}`);
+ const profile=(await db(`mv_profiles?discord_id=eq.${target}&select=user_id`))[0];
+ if(profile)await db(`mv_profiles?user_id=eq.${profile.user_id}`,'PATCH',{is_founder:member.roles.includes('1187492291947012126')});
+ const collection=profile?(await db(`rpc/mv_badge_collection?user_id=eq.${profile.user_id}`,'POST',{}))[0]:null;
+ const mapping=await db('mv_badge_discord');
+ data={embeds:profileEmbeds(member,collection,mapping),content:'',allowed_mentions:{parse:[]}};
+ }catch(e){data={content:'⚠️ Impossible de charger ce profil. Vérifie que la personne est membre du serveur et réessaie.',embeds:[],allowed_mentions:{parse:[]}};console.error('profile',e.message);}
+ const r=await fetch(`https://discord.com/api/v10/webhooks/${APP}/${i.token}/messages/@original`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+ if(!r.ok)console.error('profile-reply',r.status);
+}
+
 Deno.serve(async req=>{if(req.method!=='POST')return new Response('Method not allowed',{status:405});try{
  const signature=req.headers.get('x-signature-ed25519'),timestamp=req.headers.get('x-signature-timestamp');if(!/^[a-f0-9]{128}$/i.test(signature||'')||!/^\d+$/.test(timestamp||'')||Math.abs(Date.now()/1000-Number(timestamp))>300)return new Response('Invalid signature',{status:401});
  const raw=await req.text();if(raw.length>25000)return new Response('Too large',{status:413});
  const valid=await crypto.subtle.verify({name:'Ed25519'},await verificationKey(),Uint8Array.from(signature.match(/../g),h=>parseInt(h,16)),new TextEncoder().encode(timestamp+raw));if(!valid)return new Response('Invalid signature',{status:401});
  const i=JSON.parse(raw);if(i.type===1)return Response.json({type:1});if(i.guild_id!==GUILD)return reply('Cette fonction est réservée au Multivers.');
+ if(i.type===2&&i.data.name==='profil'){EdgeRuntime.waitUntil(runProfile(i));return Response.json({type:5,data:{allowed_mentions:{parse:[]}}})}
  if(i.type===2&&i.data.name==='equipes'){EdgeRuntime.waitUntil(runTeams(i));return Response.json({type:5,data:{allowed_mentions:{parse:[]}}})}
  const actor=i.member?.user?.id;if(!actor)return reply('Compte Discord introuvable.');
  if(i.type===3&&i.data.custom_id==='review-demo')return Response.json({type:9,data:{custom_id:'review-demo-submit',title:'Bilan · Démonstration',components:[{type:1,components:[{type:4,custom_id:'score',label:'Ta note sur 5 (de 1 à 5)',style:1,min_length:1,max_length:1,required:true}]},{type:1,components:[{type:4,custom_id:'comment',label:'Ton commentaire pour les animateurs',style:2,max_length:1000,required:false}]}]}});
@@ -48,3 +80,4 @@ Deno.serve(async req=>{if(req.method!=='POST')return new Response('Method not al
  if(i.type===5&&i.data.custom_id?.startsWith('review-submit:')){const eventId=i.data.custom_id.slice(14);if(!await feedbackTarget(eventId,actor))return reply('Tu ne peux pas répondre à ce bilan.');const fields=i.data.components.flatMap(row=>row.components||[]);const score=Number(fields.find(f=>f.custom_id==='score')?.value);const comment=fields.find(f=>f.custom_id==='comment')?.value||'';if(!Number.isInteger(score)||score<1||score>5)return reply('La note doit être comprise entre 1 et 5.');await db('mv_feedback?on_conflict=event_id,discord_id','POST',{event_id:eventId,discord_id:actor,score,comment,created_at:new Date().toISOString()},'resolution=merge-duplicates,return=representation');return reply('Merci ! Ton avis a été transmis aux animateurs. Tu peux le modifier en cliquant à nouveau sur le bouton.')}
  return reply('Action non reconnue.');
  }catch(e){console.error('multivers-interactions',e.message);return new Response('Interaction unavailable',{status:500})}});
+

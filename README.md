@@ -75,11 +75,21 @@ Les images téléversées sont publiques. Les participations, identifiants Disco
 - Résultats : annonce à la clôture d’un vote, pourcentages et gestion des égalités ; aucune annonce de gagnant sans vote.
 - Planning : le dimanche à 18 h Europe/Paris, soirées de la semaine et jeux proposés au vote. Déduplication par dimanche.
 - Absences : seuls les statuts `absent` explicitement renseignés comptent. Chaque groupe de trois absences non excusées déclenche sept jours de blocage des nouvelles inscriptions. Les votes restent accessibles. Une correction qui ramène le total sous le seuil retire le blocage correspondant. L’expiration ne redéclenche pas la même sanction.
-- Bilans : message permanent dans Bilans des soirées après une fin manuelle. Le bouton ouvre un formulaire Discord (note de 1 à 5 et commentaire destiné aux animateurs), réservé aux inscrits. Les avis se consultent dans les statistiques du panel.
+- Bilans : message permanent dans Bilans des soirées après une fin manuelle. Le bouton ouvre un formulaire Discord (note de 1 à 5 et commentaire destiné aux animateurs), réservé aux inscrits. Les avis se consultent dans la tuile Bilans des soirées du panel.
 - `/equipes nombre:2` : à utiliser dans le chat du vocal, en étant connecté à ce vocal. Répartition écrite des membres actuellement connectés, bots exclus, sans déplacement. Le bot prend un instantané via une courte connexion Gateway puis se déconnecte. Limitation à un tirage par minute sur le serveur et protection du quota de connexions Discord.
 
 `supabase/functions/multivers-interactions/index.ts` valide les signatures Ed25519 et les timestamps Discord avant de répondre aux commandes et formulaires. Le token reste uniquement dans les secrets Supabase. La clé publique de vérification est obtenue depuis l’application Discord puis stockée dans les réglages, accessibles uniquement au serveur.
 
-L’endpoint d’interactions est configuré sur l’application Discord et la commande est enregistrée au niveau du serveur. Aucune session Gateway permanente n’est utilisée : cela ne met pas Multix en ligne en continu et ne détecte pas automatiquement les départs d’un vocal.
+L’endpoint d’interactions est configuré sur l’application Discord et la commande est enregistrée au niveau du serveur. Une session Gateway reprenable est désormais pilotée par `multivers-voice`, relancée chaque minute par un cron privé. Elle suit les arrivées et départs des vocaux, conserve son identifiant de session et sa séquence entre les exécutions et évite les identifications répétées. Une courte interruption lors d’une reprise peut retarder une création ; les événements sont rejoués par Discord.
 
 Tests : `node --test tests/api.test.cjs tests/interactions.test.cjs`.
+
+## Badges et vocaux temporaires
+
+- `/profil` affiche ses badges avec cinq émojis personnalisés ; `/profil membre:@pseudo` consulte ceux d’un autre membre. Réponse publique sans notification de mention.
+- Quatre badges automatiques : 1 soirée, 5 soirées, 5 jeux différents, 20 soirées. Seules les inscriptions marquées présent, sur une soirée publiée commencée, non annulée et hors test comptent. Les corrections recalculent la collection et les rôles.
+- Le rôle Fondateur `1187492291947012126`, vérifié auprès de Discord, débloque les cinq badges. Seuls ses membres attribuent ou retirent Cœur du Multivers depuis le panel. Les écritures sont journalisées.
+- Cinq rôles de badges sans permissions et cinq émojis sont enregistrés dans `mv_badge_discord`. Synchronisation dans le cron existant, et immédiatement après un pointage ou une attribution manuelle ; les échecs Discord sont réessayés au prochain passage.
+- Dans les 14 catégories de jeux strictement entre Événements et Assistance, rejoindre `➕・Créer un vocal` crée un salon dans la même catégorie avec ses permissions héritées puis y déplace le membre. Le salon est supprimé quand sa dernière personne quitte. Les salons existants hors gestion Multix ne sont jamais supprimés.
+- `mv_voice_launchers`, `mv_temporary_voices`, `mv_voice_presence`, `mv_gateway_session` sont exclusivement accessibles au service. `multivers-voice` vérifie le secret du cron avant chaque opération. Le token Discord reste dans les secrets Edge, sans copie en base ou dans GitHub.
+- Les fichiers `temporary-voice.sql` et `badge-discord-roles.sql` documentent les migrations installées ; ne pas les rejouer sur une base déjà configurée. Tests : `node --test tests/*.test.cjs`.

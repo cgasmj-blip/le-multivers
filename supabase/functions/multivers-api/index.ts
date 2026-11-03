@@ -161,6 +161,26 @@ async function deleteStat(b,me){
  if(kind==='event')await flushEventLogs();
  return {ok:true};
 }
+async function testCommunityMessages(){
+ const settings=(await db('mv_settings?id=eq.true'))[0];
+ const events=await db('mv_events?published=eq.true&cancelled=eq.false&ends_at=is.null&order=starts_at.asc&limit=3');
+ const polls=await db('mv_polls?published=eq.true&select=*,mv_options(*)&order=opens_at.desc&limit=2');
+ const event=events[0],game=event?.game||'Dead by Daylight',image=event?.image_url;
+ const marker='🧪 **TEST — démonstration sans notification**';
+ const when=Math.floor(Date.now()/1000)+1800;
+ const programme=events.length?events.map(e=>`• **${e.game}** — <t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`).join('\n'):'• Exemple : Dead by Daylight — samedi à 22 h';
+ const choices=polls.length?polls.map(p=>`**${p.title}** : ${p.mv_options.map(o=>o.game).join(', ')}`).join('\n'):'Exemples : R.E.P.O., Codenames, Dead by Daylight';
+ const samples=[
+ {kind:'rappel',channel:settings.reminder_channel_id,payload:{content:marker,embeds:[{title:'🔔 La soirée commence bientôt · '+game,description:`Exemple de rappel : rendez-vous <t:${when}:R> !\n\n`+(event?.channel_id?`[Rejoindre le vocal](https://discord.com/channels/${GUILD}/${event.channel_id})`:'[Ouvrir le panel](https://cgasmj-blip.github.io/le-multivers/)')+'\n\n*En situation réelle, seules les personnes inscrites sont mentionnées.*',...(image?{image:{url:image}}:{}),footer:{text:'Multix · Bon jeu à tous ! · TEST'}}]}},
+ {kind:'jeu-gagnant',channel:settings.winner_channel_id,payload:{content:marker,embeds:[{title:'🏆 Le jeu gagnant · '+game,description:`**Résultats fictifs pour l’aperçu :**\n\n**${game}** · 6 votes · 60 %\n**R.E.P.O.** · 3 votes · 30 %\n**Codenames** · 1 vote · 10 %`,color:15844367,...(image?{image:{url:image}}:{}),footer:{text:'Multix · 10 votants fictifs · TEST'}}]}},
+ {kind:'planning',channel:settings.weekly_channel_id,payload:{content:marker,embeds:[{title:'📅 Cette semaine dans Le Multivers',description:('### Les soirées à venir\n'+programme+'\n\n### Les jeux proposés au vote\n'+choices+'\n\n[Voir le panel](https://cgasmj-blip.github.io/le-multivers/)'+(settings.suggestions_channel_id?` · [Suggérer un jeu](https://discord.com/channels/${GUILD}/${settings.suggestions_channel_id})`:'')).slice(0,4096),color:9854207,footer:{text:'Multix · Rendez-vous le dimanche à 18 h · TEST'}}]}},
+ {kind:'bilan',channel:settings.feedback_channel_id,payload:{content:marker+'\n\n## 💬 Bilan · '+game+'\nLa soirée est terminée ! Qu’en as-tu pensé ?\nClique sur le bouton pour donner une note et laisser un commentaire aux animateurs.\n\n*Ce bouton ouvre un formulaire de démonstration. Aucune réponse ne sera enregistrée.*',components:[{type:1,components:[{type:2,style:1,label:'Tester le formulaire',custom_id:'review-demo'}]}]}}
+ ];
+ const results=[];
+ for(const sample of samples){try{const payload={...sample.payload,allowed_mentions:{parse:[],users:[],roles:[],replied_user:false}};const message=await discord(`/channels/${sample.channel}/messages`,'POST',payload);results.push({kind:sample.kind,channel_id:sample.channel,message_id:message.id,ok:true})}catch(e){results.push({kind:sample.kind,ok:false,error:e.message})}}
+ return {tests:results};
+}
+
 async function setupCommunity(){
  const parent=await eventCategory();let channels=await discord(`/guilds/${GUILD}/channels`);const settings=(await db('mv_settings?id=eq.true'))[0];
  const specs=[['reminder_channel_id','🔔・Rappels'],['winner_channel_id','🏆・Jeu gagnant'],['weekly_channel_id','📅・Planning'],['feedback_channel_id','💬・Bilans des soirées']];const patch={};
@@ -188,14 +208,14 @@ async function communityNotifications(){
  }
  // Only newly closed polls are announced, with a 7-day recovery window.
  const polls=await db('mv_polls?published=eq.true&select=*,mv_options(*)&closes_at=gte.'+encodeURIComponent(settings.features_live_at)+'&closes_at=lte.'+encodeURIComponent(new Date().toISOString())+'&closes_at=gte.'+encodeURIComponent(new Date(Date.now()-7*86400000).toISOString()));
- for(const p of polls){const votes=await db(`mv_votes?poll_id=eq.${p.id}&select=option_id`);if(!votes.length)continue;const scores=p.mv_options.map(o=>({...o,count:votes.filter(v=>v.option_id===o.id).length})).sort((a,b)=>b.count-a.count);const winners=scores.filter(o=>o.count===scores[0]?.count);const desc=scores.map(o=>`**${o.game}** · ${o.count} vote(s) · ${Math.round(o.count/votes.length*100)} %`).join('\n');results.push(await sendOnce('winner:'+p.id,settings.winner_channel_id,{allowed_mentions:{parse:[]},embeds:[{title:'🏆 '+(winners.length>1?'Égalité pour le jeu de la semaine':'Le jeu gagnant · '+winners[0].game),description:(winners.length>1?'Jeux à égalité : '+winners.map(w=>w.game).join(', ')+'\n\n':'')+desc,color:15844367,...(winners.length===1&&winners[0].image_url?{image:{url:winners[0].image_url}}:{}),footer:{text:`Multix · ${votes.length} votant(s)`}}]}));}
+ for(const p of polls){const votes=await db(`mv_votes?poll_id=eq.${p.id}&select=option_id`);if(!votes.length)continue;const scores=p.mv_options.map(o=>({...o,count:votes.filter(v=>v.option_id===o.id).length})).sort((a,b)=>b.count-a.count);const winners=scores.filter(o=>o.count===scores[0]?.count);const desc=scores.map(o=>`**${o.game}** · ${o.count} vote(s) · ${Math.round(o.count/votes.length*100)} %`).join('\n');results.push(await sendOnce('winner:'+p.id,settings.winner_channel_id,{content:'@everyone',allowed_mentions:{parse:['everyone']},embeds:[{title:'🏆 '+(winners.length>1?'Égalité pour le jeu de la semaine':'Le jeu gagnant · '+winners[0].game),description:(winners.length>1?'Jeux à égalité : '+winners.map(w=>w.game).join(', ')+'\n\n':'')+desc,color:15844367,...(winners.length===1&&winners[0].image_url?{image:{url:winners[0].image_url}}:{}),footer:{text:`Multix · ${votes.length} votant(s)`}}]}));}
  const finished=await db('mv_events?cancelled=eq.false&ends_at=not.is.null&ends_at=gte.'+encodeURIComponent(settings.features_live_at));
- for(const e of finished){if(Date.parse(e.ends_at)>Date.now())continue;results.push(await sendOnce('feedback:'+e.id,settings.feedback_channel_id,{allowed_mentions:{parse:[]},content:'## 💬 Bilan · '+e.game+'\nLa soirée est terminée ! Qu’en as-tu pensé ?\nClique sur le bouton pour donner une note et laisser un commentaire aux animateurs.',components:[{type:1,components:[{type:2,style:1,label:'Donner mon avis',custom_id:'review:'+e.id}]}]}));}
+ for(const e of finished){if(Date.parse(e.ends_at)>Date.now())continue;const regs=await db(`mv_registrations?event_id=eq.${e.id}&registered=eq.true&select=mv_profiles(discord_id)`);const ids=regs.map(r=>r.mv_profiles.discord_id);for(let offset=0;offset<ids.length;offset+=60){const group=ids.slice(offset,offset+60);results.push(await sendOnce('feedback:'+e.id+':'+offset/60,settings.feedback_channel_id,{allowed_mentions:{parse:[],users:group},content:group.map(id=>`<@${id}>`).join(' ')+'\n\n## 💬 Bilan · '+e.game+'\nLa soirée est terminée ! Qu’en as-tu pensé ?\nClique sur le bouton pour donner une note et laisser un commentaire aux animateurs.',components:[{type:1,components:[{type:2,style:1,label:'Donner mon avis',custom_id:'review:'+e.id}]}]}));}}
  const now=new Date(),parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Paris',weekday:'short',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(now).map(x=>[x.type,x.value]));
  if(parts.weekday==='Sun'&&Number(parts.hour)>=18){const upcoming=events.filter(e=>Date.parse(e.starts_at)>Date.now()&&Date.parse(e.starts_at)<Date.now()+8*86400000);const active=await db('mv_polls?published=eq.true&select=*,mv_options(*)&closes_at=gt.'+encodeURIComponent(now.toISOString()));
  const programme=upcoming.length?upcoming.map(e=>`• **${e.game}** — <t:${Math.floor(Date.parse(e.starts_at)/1000)}:F>`).join('\n'):'Les prochaines soirées seront annoncées ici.';
  const choices=active.length?active.map(p=>`**${p.title}** : ${p.mv_options.map(o=>o.game).join(', ')}`).join('\n'):'Les propositions pour le prochain vote arrivent bientôt.';
- results.push(await sendOnce(`weekly:${parts.year}-${parts.month}-${parts.day}`,settings.weekly_channel_id,{allowed_mentions:{parse:[]},embeds:[{title:'📅 Cette semaine dans Le Multivers',description:('### Les soirées à venir\n'+programme+'\n\n### Les jeux proposés au vote\n'+choices+'\n\n[Voir le panel](https://cgasmj-blip.github.io/le-multivers/)'+(settings.suggestions_channel_id?` · [Suggérer un jeu](https://discord.com/channels/${GUILD}/${settings.suggestions_channel_id})`:'')).slice(0,4096),color:9854207,footer:{text:'Multix · Votre rendez-vous du dimanche à 18 h'}}]}));}
+ results.push(await sendOnce(`weekly:${parts.year}-${parts.month}-${parts.day}`,settings.weekly_channel_id,{content:'@everyone',allowed_mentions:{parse:['everyone']},embeds:[{title:'📅 Cette semaine dans Le Multivers',description:('### Les soirées à venir\n'+programme+'\n\n### Les jeux proposés au vote\n'+choices+'\n\n[Voir le panel](https://cgasmj-blip.github.io/le-multivers/)'+(settings.suggestions_channel_id?` · [Suggérer un jeu](https://discord.com/channels/${GUILD}/${settings.suggestions_channel_id})`:'')).slice(0,4096),color:9854207,footer:{text:'Multix · Votre rendez-vous du dimanche à 18 h'}}]}));}
  for(const r of results){if(r.ok)sent++;if(r.error)failed++;}return {sent,failed};
 }
 
@@ -215,7 +235,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -237,6 +257,7 @@ Deno.serve(async req=>{
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
  }
+ if(action==='test-community-messages')return new Response(JSON.stringify(await testCommunityMessages()),{headers:cors});
  if(action==='setup-community')return new Response(JSON.stringify(await setupCommunity()),{headers:cors});
  if(action==='normalize-channels')return new Response(JSON.stringify(await normalizeGuildChannels()),{headers:cors});
  if(action==='rename-event-voices'){

@@ -140,6 +140,25 @@ async function syncRoles(){
  const cleanup=await closeFinishedVocals();const logs=await flushEventLogs();let typography;try{typography=await normalizeGuildChannels()}catch(e){typography={error:e.message}}let community;try{community=await communityNotifications()}catch(e){community={error:e.message}}return {changed,failed:failed+cleanup.failed,closed:cleanup.closed,logs,typography,community};
  }finally{await db('rpc/mv_release_sync','POST',{});}
 }
+async function deleteStat(b,me){
+ const kind=b.kind,id=uuid(b.id);if(!['event','poll','registration','vote','feedback'].includes(kind))throw new HttpError('Suppression invalide');
+ const user=['registration','vote'].includes(kind)?uuid(b.user_id):null;
+ const discordId=kind==='feedback'?String(b.discord_id||''):null;if(kind==='feedback'&&!/^\d{17,20}$/.test(discordId))throw new HttpError('Identifiant Discord invalide');
+ if(kind==='event'){
+ const e=(await db(`mv_events?id=eq.${id}`))[0];if(!e)throw new HttpError('Soirée introuvable',404);
+ await db(`mv_events?id=eq.${id}`,'PATCH',{cancelled:true});
+ await syncRoles();const current=(await db(`mv_events?id=eq.${id}`))[0];
+ if(current.resources_owned&&((current.channel_id&&!current.channel_closed)||(current.role_id&&!current.role_deleted)))throw new HttpError('Le nettoyage Discord n’est pas terminé. Réessaie la suppression dans un instant.',409);
+ await safeAnnouncement(id);await safeNotify(id);
+ }
+ if(kind==='registration'){
+ await db(`mv_registrations?event_id=eq.${id}&user_id=eq.${user}`,'PATCH',{registered:false,attendance:'unmarked'});await syncRoles();
+ const r=(await db(`mv_registrations?event_id=eq.${id}&user_id=eq.${user}`))[0];if(r?.role_granted)throw new HttpError('Le retrait du rôle est encore en cours. Réessaie dans un instant.',409);
+ }
+ await db('rpc/mv_delete_stat','POST',{p_kind:kind,p_id:id,p_user:user,p_discord:discordId});
+ if(kind==='registration')await safeNotify(id);
+ return {ok:true};
+}
 async function setupCommunity(){
  const parent=await eventCategory();let channels=await discord(`/guilds/${GUILD}/channels`);const settings=(await db('mv_settings?id=eq.true'))[0];
  const specs=[['reminder_channel_id','🔔・Rappels'],['winner_channel_id','🏆・Jeu gagnant'],['weekly_channel_id','📅・Planning'],['feedback_channel_id','💬・Bilans des soirées']];const patch={};
@@ -249,7 +268,8 @@ Deno.serve(async req=>{
  }else if(action==='vote')await db('rpc/mv_vote','POST',{p_poll:uuid(b.poll_id),p_user:me.user_id,p_option:uuid(b.option_id)});
  else if(action!=='mine'){
  if(!me.manager)throw new HttpError('Ce rôle ne permet pas la gestion des événements.',403);
- if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)'),settings:(await db('mv_settings?id=eq.true'))[0],profiles:await db('mv_profiles?select=user_id,blocked_until'),feedback:await db('mv_feedback?select=*,mv_events(game)&order=created_at.desc')};
+ if(action==='delete-stat')result=await deleteStat(b,me);
+ else if(action==='admin')result={events:await db('mv_events?order=starts_at.asc'),polls:await db('mv_polls?select=*,mv_options(*)&order=opens_at.desc'),votes:await db('mv_votes?select=*,mv_profiles(display_name,discord_id),mv_options(game)'),registrations:await db('mv_registrations?select=*,mv_profiles(display_name,discord_id)'),settings:(await db('mv_settings?id=eq.true'))[0],profiles:await db('mv_profiles?select=user_id,blocked_until'),feedback:await db('mv_feedback?select=*,mv_events(game)&order=created_at.desc')};
  else if(action==='attendance'){
  await db('rpc/mv_attendance','POST',{p_event:uuid(b.event_id),p_user:uuid(b.user_id),p_mark:b.mark});
  result={ok:true,notification:await safeNotify(uuid(b.event_id))};

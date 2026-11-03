@@ -123,7 +123,7 @@ async function closeFinishedVocals(){
 async function flushEventLogs(){
  const rows=await db('mv_cancellation_logs?message_id=is.null&order=cancelled_at.asc&limit=20');let sent=0,failed=0;
  for(const row of rows){try{
- const message=await discord(`/channels/${LOG_CHANNEL}/messages`,'POST',{allowed_mentions:{parse:[]},embeds:[{title:({programmation:'📅 Soirée programmée · ',annulation:'🚫 Soirée annulée · ',fin:'🏁 Soirée terminée · '}[row.action]||'Soirée · ')+row.game,color:row.action==='annulation'?13848932:9854207,fields:[{name:({programmation:'Programmée par',annulation:'Annulée par',fin:'Terminée par'}[row.action]||'Auteur'),value:`<@${row.actor_discord_id}> · ${row.actor_name}`},{name:'Soirée prévue le',value:`<t:${Math.floor(Date.parse(row.starts_at)/1000)}:F>`},{name:'Action enregistrée le',value:`<t:${Math.floor(Date.parse(row.cancelled_at)/1000)}:F>`}],footer:{text:'Multix · Journal des événements'}}]});
+ const message=await discord(`/channels/${LOG_CHANNEL}/messages`,'POST',{allowed_mentions:{parse:[]},embeds:[{title:({programmation:'📅 Soirée programmée · ',annulation:'🚫 Soirée annulée · ',fin:'🏁 Soirée terminée · ',suppression:'🗑️ Soirée supprimée · ',restauration:'♻️ Soirée restaurée · '}[row.action]||'Soirée · ')+row.game,color:row.action==='annulation'?13848932:9854207,fields:[{name:({programmation:'Programmée par',annulation:'Annulée par',fin:'Terminée par',suppression:'Supprimée par',restauration:'Restaurée par'}[row.action]||'Auteur'),value:`<@${row.actor_discord_id}> · ${row.actor_name}`},{name:'Soirée prévue le',value:`<t:${Math.floor(Date.parse(row.starts_at)/1000)}:F>`},{name:'Action enregistrée le',value:`<t:${Math.floor(Date.parse(row.cancelled_at)/1000)}:F>`}],footer:{text:'Multix · Journal des événements'}}]});
  await db(`mv_cancellation_logs?id=eq.${row.id}`,'PATCH',{message_id:message.id,error:null});sent++;
  }catch(e){failed++;await db(`mv_cancellation_logs?id=eq.${row.id}`,'PATCH',{error:e.message});}}
  return {sent,failed};
@@ -149,6 +149,7 @@ async function deleteStat(b,me){
  await db(`mv_events?id=eq.${id}`,'PATCH',{cancelled:true});
  await syncRoles();const current=(await db(`mv_events?id=eq.${id}`))[0];
  if(current.resources_owned&&((current.channel_id&&!current.channel_closed)||(current.role_id&&!current.role_deleted)))throw new HttpError('Le nettoyage Discord n’est pas terminé. Réessaie la suppression dans un instant.',409);
+ await db('rpc/mv_queue_event_log','POST',{p_event:id,p_actor:me.discord_id,p_name:me.display_name,p_action:'suppression'});
  await safeAnnouncement(id);await safeNotify(id);
  }
  if(kind==='registration'){
@@ -157,6 +158,7 @@ async function deleteStat(b,me){
  }
  await db('rpc/mv_delete_stat','POST',{p_kind:kind,p_id:id,p_user:user,p_discord:discordId});
  if(kind==='registration')await safeNotify(id);
+ if(kind==='event')await flushEventLogs();
  return {ok:true};
 }
 async function setupCommunity(){
@@ -213,8 +215,28 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ if(action==='inspect-recovery'||action==='restore-programme'){
+ const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
+ const message=messages.find(m=>m.author?.id==='1566913973687812286'&&m.embeds?.some(e=>e.title?.normalize('NFKC').toLowerCase().includes('dead by daylight')));
+ if(!message)throw new HttpError('Annonce Dead by Daylight introuvable dans les messages récents.',404);
+ const embed=message.embeds.find(e=>e.title?.normalize('NFKC').toLowerCase().includes('dead by daylight'));
+ const rosterMessages=await discord(`/channels/${settings.roster_channel_id}/messages?limit=100`);
+ const roster=rosterMessages.find(m=>m.author?.id==='1566913973687812286'&&m.content?.normalize('NFKC').toLowerCase().includes('dead by daylight'));
+ const ids=roster?[...new Set([...roster.content.matchAll(/<@(\d{17,20})>/g)].map(m=>m[1]))]:[];
+ if(action==='restore-programme'&&Array.isArray(b.participant_ids)){for(const id of b.participant_ids)if(typeof id==='string'&&/^\d{17,20}$/.test(id)&&!ids.includes(id))ids.push(id);}
+ const recovered={message_id:message.id,embed,roster_message_id:roster?.id||null,participant_ids:ids};
+ if(action==='inspect-recovery')return new Response(JSON.stringify(recovered),{headers:cors});
+ const timestamp=embed.fields?.find(f=>f.name==='Début')?.value.match(/<t:(\d+)/)?.[1];const capacity=Number(embed.fields?.find(f=>f.name==='Places proposées')?.value);
+ if(!timestamp||!Number.isInteger(capacity)||capacity<1||capacity>100)throw new HttpError('Les détails récupérés sont incomplets.',400);
+ let event=(await db('mv_events?game=eq.Dead%20by%20daylight&cancelled=eq.false&ends_at=is.null&limit=1'))[0];
+ if(!event)event=(await db('mv_events','POST',{game:'Dead by daylight',description:embed.description||'',image_url:embed.image?.url||'',capacity,starts_at:new Date(Number(timestamp)*1000).toISOString(),published:true,cancelled:false,announcement_message_id:message.id,announcement_channel_id:settings.announcement_channel_id,roster_message_id:roster?.id||null,roster_channel_id:roster?settings.roster_channel_id:null}))[0];
+ await ensureResources(event.id);const restored=[],failed=[];
+ for(const id of ids){const profile=(await db(`mv_profiles?discord_id=eq.${id}`))[0];if(profile){try{await db('rpc/mv_register','POST',{p_event:event.id,p_user:profile.user_id,p_registered:true});restored.push(id)}catch(e){failed.push({discord_id:id,error:e.message})}}}
+ const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
+ return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
+ }
  if(action==='setup-community')return new Response(JSON.stringify(await setupCommunity()),{headers:cors});
  if(action==='normalize-channels')return new Response(JSON.stringify(await normalizeGuildChannels()),{headers:cors});
  if(action==='rename-event-voices'){

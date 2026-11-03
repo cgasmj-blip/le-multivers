@@ -20,6 +20,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Vérifier le JavaScript
         run: node --check app.js
+      - name: Vérifier l’API et les interactions Discord
+        run: node --test tests/api.test.cjs tests/interactions.test.cjs
       - name: Préparer le site
         run: |
           mkdir _site

@@ -72,6 +72,7 @@ async function notifyAnnouncement(eventId){
 }
 async function safeAnnouncement(id){try{return await notifyAnnouncement(id)}catch(e){console.error('event-announcement',e.message);return {error:e.message}}}
 async function safeNotify(eventId){try{return await notifyRoster(eventId)}catch(e){console.error('roster-notification',e.message);return {error:e.message}}}
+function voiceName(game){const styled=Array.from(game.normalize('NFKD').toUpperCase(),c=>{const n=c.codePointAt(0);if(n>=65&&n<=90)return String.fromCodePoint(0x1D400+n-65);if(n>=48&&n<=57)return String.fromCodePoint(0x1D7CE+n-48);return c}).join('');return Array.from('⭐・'+styled).slice(0,100).join('')}
 async function eventCategory(){
  const settings=(await db('mv_settings?id=eq.true'))[0];
  const first=await discord(`/channels/${settings.announcement_channel_id}`);
@@ -89,7 +90,7 @@ async function ensureResources(eventId){
  if(!e.resources_owned||!e.role_id||e.role_deleted){const role=await discord(`/guilds/${GUILD}/roles`,'POST',{name:('⭐・Soirée — '+e.game).slice(0,100),permissions:'0',mentionable:false});
  await db(`mv_events?id=eq.${eventId}`,'PATCH',{role_id:role.id,resources_owned:true,role_deleted:false});e.role_id=role.id;}
  const bot=await discord('/users/@me');
- const channel=await discord(`/guilds/${GUILD}/channels`,'POST',{name:('⭐・'+e.game).slice(0,100),type:2,parent_id:parent,permission_overwrites:[{id:GUILD,type:0,deny:'1049600',allow:'0'},{id:e.role_id,type:0,allow:'1049600',deny:'0'},{id:bot.id,type:1,allow:'1049600',deny:'0'}]});
+ const channel=await discord(`/guilds/${GUILD}/channels`,'POST',{name:voiceName(e.game),type:2,parent_id:parent,permission_overwrites:[{id:GUILD,type:0,deny:'1049600',allow:'0'},{id:e.role_id,type:0,allow:'1049600',deny:'0'},{id:bot.id,type:1,allow:'1049600',deny:'0'}]});
  await db(`mv_events?id=eq.${eventId}`,'PATCH',{channel_id:channel.id,channel_closed:false,resource_error:null});
  }catch(err){await db(`mv_events?id=eq.${eventId}`,'PATCH',{resource_error:err.message});throw err;}
  finally{await db(`mv_events?id=eq.${eventId}`,'PATCH',{resources_busy_until:null});}
@@ -149,8 +150,13 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
+ if(action==='rename-event-voices'){
+ const events=await db('mv_events?resources_owned=eq.true&channel_closed=eq.false&channel_id=not.is.null');const results=[];
+ for(const e of events){try{const channel=await discord(`/channels/${e.channel_id}`);if(channel.guild_id!==GUILD||channel.type!==2)throw new HttpError('Ce canal ne correspond pas au vocal prévu.',400);const name=voiceName(e.game);if(channel.name!==name)await discord(`/channels/${e.channel_id}`,'PATCH',{name});results.push({channel_id:e.channel_id,name,ok:true});}catch(err){results.push({channel_id:e.channel_id,ok:false,error:err.message});}}
+ return new Response(JSON.stringify({channels:results}),{headers:cors});
+ }
  if(action==='test-session'){
  const target='497181585989435392';const member=await discord(`/guilds/${GUILD}/members/${target}`);
  const profile=(await db(`mv_profiles?discord_id=eq.${target}`))[0];if(!profile)throw new HttpError('Cette personne doit d’abord se connecter au panel.',400);

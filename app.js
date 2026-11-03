@@ -37,6 +37,42 @@ async function home(){
  $('#polls').replaceChildren();if(!polls.length){const panel=node('div','panel');panel.append(node('div','eyebrow','À TOI DE CHOISIR'),node('h2','','Le jeu de la semaine'),node('p','','Le prochain vote sera annoncé ici.'));$('#polls').append(panel)}
  for(const p of polls){const panel=node('section','panel poll-card');const future=Date.parse(p.opens_at)>Date.now();panel.append(node('div','eyebrow','À TOI DE CHOISIR'),node('h2','',p.title),node('p','',future?'Ouverture : '+date(p.opens_at):'Vote ouvert jusqu’au '+date(p.closes_at)));const v=mine.votes.find(v=>v.poll_id===p.id);for(const opt of p.mv_options.sort((a,b)=>a.sort_order-b.sort_order)){const b=button('',async()=>{if(!me){await login();return}await api('vote',{poll_id:p.id,option_id:opt.id});mine=await api('mine');await home();status('Ton vote pour '+opt.game+' est enregistré.');},'vote');b.append(picture(opt.image_url,'',''),node('span','',opt.game),node('small','',v?.option_id===opt.id?'✓ Ton choix':'Voter →'));b.disabled=future;b.classList.toggle('selected',v?.option_id===opt.id);b.setAttribute('aria-pressed',v?.option_id===opt.id);panel.append(b)}panel.append(node('p','muted','Un vote par compte Discord. Tu peux modifier ton choix avant la clôture.'));$('#polls').append(panel)}
 }
+
+const BADGES=[
+ {id:'premier-voyage',name:'Premier voyage',description:'Participer à 1 soirée.',goal:1,metric:'sessions'},
+ {id:'compagnon',name:'Compagnon du Multivers',description:'Participer à 5 soirées.',goal:5,metric:'sessions'},
+ {id:'explorateur',name:'Explorateur des mondes',description:'Participer à des soirées sur 5 jeux différents.',goal:5,metric:'games'},
+ {id:'pilier',name:'Pilier du Multivers',description:'Participer à 20 soirées.',goal:20,metric:'sessions'},
+ {id:'coeur',name:'Cœur du Multivers',description:'Récompense d’entraide attribuée uniquement par les fondateurs.'}
+];
+function badgeCard(b,member){
+ const earned=member?.earned.includes(b.id),card=node('article','badge-card'+(member&&!earned?' badge-locked':''));
+ const img=node('img','badge-art');img.src='assets/badges/'+b.id+'.png';img.alt=b.name;img.loading='lazy';img.width=180;img.height=180;
+ card.append(img,node('h3','',b.name),node('p','muted',b.description));
+ if(member){const text=earned?(member.is_founder?'✦ Débloqué · Fondateur':'✓ Débloqué'):b.metric?Math.min(Number(member[b.metric]),b.goal)+' / '+b.goal+(b.metric==='games'?' jeux':' soirées'):'À recevoir des fondateurs';card.append(node('span','badge-state',text));}
+ return card;
+}
+async function refreshBadges(){try{await loadBadges()}catch(e){if($('#badge-caption'))$('#badge-caption').textContent='La collection est momentanément indisponible.';console.error('badges',e.message)}}
+async function loadBadges(){
+ const root=$('#badge-collection');if(!root)return;
+ if(!me){root.replaceChildren(...BADGES.map(b=>badgeCard(b)));$('#badge-caption').textContent='Connecte-toi pour retrouver ta collection. Les présences validées débloquent les badges automatiquement.';$('#badge-community').replaceChildren();return;}
+ const result=await api('badges'),self=result.members.find(m=>m.user_id===result.self);
+ root.replaceChildren(...BADGES.map(b=>badgeCard(b,self)));
+ $('#badge-caption').textContent=self?.is_founder?'Les fondateurs disposent des cinq Reliques cosmiques.':(self?.sessions||0)+' soirée(s) jouée(s) · '+(self?.games||0)+' jeu(x) différent(s). Seules les présences validées comptent, hors soirées de test et annulées.';
+ const community=$('#badge-community');community.replaceChildren(node('h3','','Les collections de la communauté'));
+ for(const member of result.members){
+ const row=node('div','member-badges'),head=node('div','member-badge-name');head.append(node('strong','',member.display_name));if(member.is_founder)head.append(node('span','tag','Fondateur'));row.append(head);
+ const badges=node('div','member-badge-icons');
+ for(const b of BADGES){const earned=member.earned.includes(b.id);const img=node('img',earned?'':'badge-muted');img.src='assets/badges/'+b.id+'.png';img.alt=b.name+(earned?' · Débloqué':' · Non débloqué');img.title=img.alt;img.width=64;img.height=64;img.loading='lazy';badges.append(img)}row.append(badges);
+ if(result.founder&&!member.is_founder){const awarded=member.heart;row.append(button(awarded?'Retirer Cœur du Multivers':'Attribuer Cœur du Multivers',async()=>{if(!await confirmHeart(member.display_name,!awarded))return;await api('grant-heart',{user_id:member.user_id,granted:!awarded});await refreshBadges();status('Badge '+(awarded?'retiré.':'attribué.'));}));}
+ community.append(row);
+ }
+}
+function confirmHeart(name,granted){
+ let dialog=$('#badge-confirm');if(!dialog){dialog=node('dialog','delete-confirm');dialog.id='badge-confirm';dialog.setAttribute('aria-labelledby','badge-confirm-title');const title=node('h2');title.id='badge-confirm-title';const text=node('p');text.id='badge-confirm-description';dialog.setAttribute('aria-describedby',text.id);const actions=node('div','delete-confirm-actions'),cancel=node('button','join','Annuler'),accept=node('button','primary','Confirmer');cancel.type=accept.type='button';cancel.id='badge-confirm-cancel';cancel.onclick=()=>dialog.close('cancel');accept.onclick=()=>dialog.close('confirm');actions.append(cancel,accept);dialog.append(title,text,actions);document.body.append(dialog);}
+ if(dialog.open)return Promise.resolve(false);$('#badge-confirm-title').textContent=(granted?'Attribuer':'Retirer')+' Cœur du Multivers ?';$('#badge-confirm-description').textContent='Membre : '+name+'. Cette décision est réservée aux fondateurs.';dialog.returnValue='';return new Promise(resolve=>{dialog.addEventListener('close',()=>resolve(dialog.returnValue==='confirm'),{once:true});dialog.showModal();$('#badge-confirm-cancel').focus()});
+}
+
 function localDate(v){const d=new Date(v);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16)}
 function fill(form,data){form.reset();for(const el of form.elements){if(!el.name||!(el.name in data))continue;if(el.type==='checkbox')el.checked=!!data[el.name];else el.value=el.type==='datetime-local'?localDate(data[el.name]):data[el.name]??''}}
 async function upload(input,target){const f=input.files[0];if(!f)return;if(f.size>3145728)throw new Error('Image trop lourde : 3 Mo maximum.');const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(',')[1]);r.onerror=()=>reject(new Error('Lecture du fichier impossible'));r.readAsDataURL(f)});status('Enregistrement de l’image…');const r=await api('upload',{type:f.type,data});target.value=r.url;status('Image enregistrée.')}
@@ -90,7 +126,7 @@ async function adminRefresh(){adminData=await api('admin');const a=adminData;$('
 function lockStartedRegistrations(){document.querySelectorAll('[data-cancellation-start]').forEach(b=>{if(Date.now()>=Date.parse(b.dataset.cancellationStart)){b.disabled=true;b.textContent='✓ Inscrit · Soirée commencée'}})}
 function startLiveRefresh(){
  let socket,heartbeat,reconnect,ref=0,timer,running=false,pending=false,stopped=false;
- async function refresh(){if($('#delete-confirm')?.open)return;if(document.hidden){pending=true;return}if(running){pending=true;return}running=true;try{if(isAdmin)await adminRefresh();else{if(me)mine=await api('mine');await home()}pending=false}catch{}finally{running=false}}
+ async function refresh(){if($('#delete-confirm')?.open||$('#badge-confirm')?.open)return;if(document.hidden){pending=true;return}if(running){pending=true;return}running=true;try{if(isAdmin)await adminRefresh();else{if(me)mine=await api('mine');await home();await refreshBadges()}pending=false}catch{}finally{running=false}}
  function requestRefresh(){clearTimeout(timer);timer=setTimeout(refresh,700)}
  function connect(){if(stopped)return;const url=C.url.replace('https:','wss:')+'/realtime/v1/websocket?apikey='+encodeURIComponent(C.key)+'&vsn=1.0.0';socket=new WebSocket(url);
  socket.onopen=()=>{socket.send(JSON.stringify({topic:'realtime:multivers:public',event:'phx_join',payload:{config:{broadcast:{ack:false,self:false},presence:{key:''},postgres_changes:[],private:false}},ref:String(++ref)}));heartbeat=setInterval(()=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({topic:'phoenix',event:'heartbeat',payload:{},ref:String(++ref)}))},25000);requestRefresh()};
@@ -103,5 +139,6 @@ function startLiveRefresh(){
  window.addEventListener('pagehide',()=>{stopped=true;clearInterval(heartbeat);clearTimeout(reconnect);socket?.close()});
  window.addEventListener('pageshow',e=>{if(e.persisted){stopped=false;connect();requestRefresh()}});
 }
-(async()=>{try{if(!C?.url||!C?.key)throw new Error('Le raccordement Supabase est en cours de configuration.');await auth();if(isAdmin){if(!me?.manager){$('#access').textContent=me?'Accès réservé au rôle Gestion événements.':'Connecte-toi avec Discord pour vérifier ton accès.';return}$('#access').hidden=true;$('#admin').hidden=false;initTabs();initForms();await adminRefresh();startLiveRefresh()}else{await home();startLiveRefresh()}}catch(e){status(e.message,true);if(!isAdmin){$('#events').replaceChildren(node('p','empty','Les soirées ne sont pas disponibles pour le moment.'));$('#polls').replaceChildren(node('p','panel','Le vote sera disponible prochainement.'))}else{$('#admin').hidden=true;$('#access').textContent='Impossible de vérifier ton accès pour le moment.'}}})();
+(async()=>{try{if(!C?.url||!C?.key)throw new Error('Le raccordement Supabase est en cours de configuration.');await auth();if(isAdmin){if(!me?.manager){$('#access').textContent=me?'Accès réservé au rôle Gestion événements.':'Connecte-toi avec Discord pour vérifier ton accès.';return}$('#access').hidden=true;$('#admin').hidden=false;initTabs();initForms();await adminRefresh();startLiveRefresh()}else{await home();await refreshBadges();startLiveRefresh()}}catch(e){status(e.message,true);if(!isAdmin){$('#events').replaceChildren(node('p','empty','Les soirées ne sont pas disponibles pour le moment.'));$('#polls').replaceChildren(node('p','panel','Le vote sera disponible prochainement.'))}else{$('#admin').hidden=true;$('#access').textContent='Impossible de vérifier ton accès pour le moment.'}}})();
+
 

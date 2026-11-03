@@ -1,4 +1,5 @@
 const GUILD='1187492291892486195', MANAGER='1564000010247475270';
+const FOUNDER='1187492291947012126';
 const LOG_CHANNEL='1566867467882463383';
 const ORIGIN='https://cgasmj-blip.github.io';
 const URL=Deno.env.get('SUPABASE_URL'), KEY=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -29,9 +30,9 @@ async function identity(req){
  const user=await r.json();const di=user.identities?.find(i=>i.provider==='discord');const id=di?.provider_id||di?.identity_data?.provider_id||di?.identity_data?.sub;
  if(!id||!/^\d{17,20}$/.test(id))throw new HttpError('Une connexion Discord est requise.',403);
  const member=await discord(`/guilds/${GUILD}/members/${id}`);
- const profile={user_id:user.id,discord_id:id,display_name:member.nick||member.user.global_name||member.user.username};
+ const profile={user_id:user.id,discord_id:id,display_name:member.nick||member.user.global_name||member.user.username,is_founder:member.roles.includes(FOUNDER)};
  await db('mv_profiles?on_conflict=user_id','POST',profile,'resolution=merge-duplicates,return=representation');
- return {user_id:user.id,discord_id:id,display_name:profile.display_name,manager:member.roles.includes(MANAGER)};
+ return {user_id:user.id,discord_id:id,display_name:profile.display_name,manager:member.roles.includes(MANAGER),founder:profile.is_founder};
 }
 async function notifyRoster(eventId){
  const settings=(await db('mv_settings?id=eq.true'))[0];
@@ -235,7 +236,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -256,6 +257,11 @@ Deno.serve(async req=>{
  for(const id of ids){const profile=(await db(`mv_profiles?discord_id=eq.${id}`))[0];if(profile){try{await db('rpc/mv_register','POST',{p_event:event.id,p_user:profile.user_id,p_registered:true});restored.push(id)}catch(e){failed.push({discord_id:id,error:e.message})}}}
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
+ }
+ if(action==='sync-badge-founders'){
+ const profiles=await db('mv_profiles?select=user_id,discord_id');let updated=0;
+ for(const p of profiles){const member=await discord(`/guilds/${GUILD}/members/${p.discord_id}`);await db(`mv_profiles?user_id=eq.${p.user_id}`,'PATCH',{is_founder:member.roles.includes(FOUNDER)});updated++;}
+ return new Response(JSON.stringify({updated}),{headers:cors});
  }
  if(action==='clear-community-tests'){
  const targets=[['1567128132299915329','1567204122787324050'],['1567128134682148936','1567204125085798471'],['1567128136506937416','1567204126490763475'],['1567128137853046864','1567204128210296843']];const results=[];
@@ -308,6 +314,14 @@ Deno.serve(async req=>{
  }
  const me=await identity(req);
  if(action==='me')return new Response(JSON.stringify(me),{headers:cors});
+ if(action==='badges')return new Response(JSON.stringify({members:await db('rpc/mv_badge_collection','POST',{}),founder:me.founder,self:me.user_id}),{headers:cors});
+ if(action==='grant-heart'){
+ if(!me.founder)throw new HttpError('Seuls les fondateurs peuvent attribuer ce badge.',403);
+ if(typeof b.granted!=='boolean')throw new HttpError('Attribution invalide');
+ await db('rpc/mv_set_heart','POST',{p_user:uuid(b.user_id),p_granted:b.granted,p_actor:me.discord_id});
+ return new Response(JSON.stringify({ok:true}),{headers:cors});
+ }
+
  let result={ok:true};
  if(action==='mine')result={registrations:await db(`mv_registrations?user_id=eq.${me.user_id}`),votes:await db(`mv_votes?user_id=eq.${me.user_id}`)};
  else if(action==='register'){
@@ -364,4 +378,5 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(result),{headers:cors});
  }catch(e){console.error('multivers-api',e.status||500,e.message);return new Response(JSON.stringify({error:e instanceof HttpError?e.message:'Erreur du serveur. Réessaie dans quelques instants.'}),{status:e.status||500,headers:cors});}
 });
+
 

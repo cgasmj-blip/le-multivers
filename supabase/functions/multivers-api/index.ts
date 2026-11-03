@@ -221,9 +221,9 @@ async function communityNotifications(){
 }
 
 const BADGE_DISCORD=[
- ['premier-voyage','✦ Premier voyage','mv_premier_voyage'],['compagnon','✦ Compagnon du Multivers','mv_compagnon'],
- ['explorateur','✦ Explorateur des mondes','mv_explorateur'],['pilier','✦ Pilier du Multivers','mv_pilier'],
- ['coeur','✦ Cœur du Multivers','mv_coeur']
+ ['premier-voyage','✦・𝐏𝐫𝐞𝐦𝐢𝐞𝐫 𝐯𝐨𝐲𝐚𝐠𝐞','mv_premier_voyage'],['compagnon','✦・𝐂𝐨𝐦𝐩𝐚𝐠𝐧𝐨𝐧 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_compagnon'],
+ ['explorateur','✦・𝐄𝐱𝐩𝐥𝐨𝐫𝐚𝐭𝐞𝐮𝐫 𝐝𝐞𝐬 𝐦𝐨𝐧𝐝𝐞𝐬','mv_explorateur'],['pilier','✦・𝐏𝐢𝐥𝐢𝐞𝐫 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_pilier'],
+ ['coeur','✦・𝐂œ𝐮𝐫 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_coeur']
 ];
 async function setupBadgeDiscord(images=[]){
  const roles=await discord(`/guilds/${GUILD}/roles`),emojis=await discord(`/guilds/${GUILD}/emojis`),results=[];
@@ -231,11 +231,12 @@ async function setupBadgeDiscord(images=[]){
  const previous=(await db(`mv_badge_discord?badge_id=eq.${id}`))[0];
  let role=roles.find(r=>r.id===previous?.role_id)||roles.find(r=>r.name===name&&r.permissions==='0');
  if(!role)role=await discord(`/guilds/${GUILD}/roles`,'POST',{name,permissions:'0',mentionable:false,hoist:false,color:id==='coeur'?15844367:9854207});
+ else if(role.name!==name)role=await discord(`/guilds/${GUILD}/roles/${role.id}`,'PATCH',{name});
  let emoji=emojis.find(e=>e.id===previous?.emoji_id)||emojis.find(e=>e.name===emojiName);
  const image=images.find(im=>im.id===id)?.image;
  if(!emoji&&typeof image==='string'&&image.startsWith('data:image/png;base64,')&&image.length<350000)emoji=await discord(`/guilds/${GUILD}/emojis`,'POST',{name:emojiName,image,roles:[]});
  const mapping={badge_id:id,role_id:role.id,emoji_id:emoji?.id||null,emoji_name:emoji?.name||null};
- await db('mv_badge_discord?on_conflict=badge_id','POST',mapping,'resolution=merge-duplicates,return=representation');results.push(mapping);
+ await db('mv_badge_discord?on_conflict=badge_id','POST',mapping,'resolution=merge-duplicates,return=representation');results.push({...mapping,name:role.name});
  }
  return {badges:results,sync:await syncBadgeRoles()};
 }

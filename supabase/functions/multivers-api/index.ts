@@ -221,9 +221,9 @@ async function communityNotifications(){
 }
 
 const BADGE_DISCORD=[
- ['premier-voyage','✦・𝐏𝐫𝐞𝐦𝐢𝐞𝐫 𝐯𝐨𝐲𝐚𝐠𝐞','mv_premier_voyage'],['compagnon','✦・𝐂𝐨𝐦𝐩𝐚𝐠𝐧𝐨𝐧 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_compagnon'],
- ['explorateur','✦・𝐄𝐱𝐩𝐥𝐨𝐫𝐚𝐭𝐞𝐮𝐫 𝐝𝐞𝐬 𝐦𝐨𝐧𝐝𝐞𝐬','mv_explorateur'],['pilier','✦・𝐏𝐢𝐥𝐢𝐞𝐫 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_pilier'],
- ['coeur','✦・𝐂œ𝐮𝐫 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_coeur']
+ ['premier-voyage','🌌✦ 𝐏𝐫𝐞𝐦𝐢𝐞𝐫 𝐯𝐨𝐲𝐚𝐠𝐞','mv_premier_voyage'],['compagnon','💎✦ 𝐂𝐨𝐦𝐩𝐚𝐠𝐧𝐨𝐧 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_compagnon'],
+ ['explorateur','🪐✦ 𝐄𝐱𝐩𝐥𝐨𝐫𝐚𝐭𝐞𝐮𝐫 𝐝𝐞𝐬 𝐦𝐨𝐧𝐝𝐞𝐬','mv_explorateur'],['pilier','🏆✦ 𝐏𝐢𝐥𝐢𝐞𝐫 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_pilier'],
+ ['coeur','💜✦ 𝐂œ𝐮𝐫 𝐝𝐮 𝐌𝐮𝐥𝐭𝐢𝐯𝐞𝐫𝐬','mv_coeur']
 ];
 async function setupBadgeDiscord(images=[]){
  const roles=await discord(`/guilds/${GUILD}/roles`),emojis=await discord(`/guilds/${GUILD}/emojis`),results=[];

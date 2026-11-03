@@ -273,7 +273,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'||action==='audit-role-emojis'||action==='fix-role-emojis'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'||action==='audit-role-emojis'||action==='fix-role-emojis'||action==='style-all-roles'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -294,6 +294,16 @@ Deno.serve(async req=>{
  for(const id of ids){const profile=(await db(`mv_profiles?discord_id=eq.${id}`))[0];if(profile){try{await db('rpc/mv_register','POST',{p_event:event.id,p_user:profile.user_id,p_registered:true});restored.push(id)}catch(e){failed.push({discord_id:id,error:e.message})}}}
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
+ }
+ if(action==='style-all-roles'){
+ const roles=await discord(`/guilds/${GUILD}/roles`),changes=[];
+ for(const role of roles){
+ if(role.id===GUILD)continue;
+ const name=Array.from(role.name.normalize('NFKD'),c=>{const n=c.codePointAt(0);return n>=65&&n<=90?String.fromCodePoint(0x1D400+n-65):n>=97&&n<=122?String.fromCodePoint(0x1D41A+n-97):n>=48&&n<=57?String.fromCodePoint(0x1D7CE+n-48):c}).join('');
+ if(name===role.name)continue;
+ try{await discord(`/guilds/${GUILD}/roles/${role.id}`,'PATCH',{name});changes.push({id:role.id,before:role.name,after:name,ok:true});}catch(e){changes.push({id:role.id,before:role.name,ok:false,error:e.message});}
+ }
+ return new Response(JSON.stringify({changes}),{headers:cors});
  }
  if(action==='fix-role-emojis'){
  const edits=[['1187492291913465914','🌌・Voyageur','🌠・Voyageur'],['1385037509469409462','💎・Booster','🚀・Booster'],['1564000799078621204','🏆・Vétéran','🎖️・Vétéran']];

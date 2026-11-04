@@ -3,7 +3,7 @@ const ROOT=Deno.env.get('SUPABASE_URL'),KEY=Deno.env.get('SUPABASE_SERVICE_ROLE_
 const token=()=>Deno.env.get('DISCORD_BOT_TOKEN')?.trim();
 class DiscordError extends Error{constructor(message,status){super(message);this.status=status}}
 async function db(path,method='GET',body,prefer='return=representation'){
- const r=await fetch(`${ROOT}/rest/v1/${path}`,{method,headers:{apikey:KEY,Authorization:`Bearer ${KEY}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.text();const data=value?JSON.parse(value):null;if(!r.ok)throw new Error('Voice database: '+r.status);return data;
+ const r=await fetch(`${ROOT}/rest/v1/${path}`,{method,headers:{apikey:KEY,Authorization:`Bearer ${KEY}`,'Content-Type':'application/json',Prefer:prefer},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.text();const data=value?JSON.parse(value):null;if(!r.ok)throw new Error('Voice database: '+r.status+' '+(data?.message||'')+' ['+path.split('?')[0]+']');return data;
 }
 async function discord(path,method='GET',body){
  const r=await fetch('https://discord.com/api/v10'+path,{method,headers:{Authorization:`Bot ${token()}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});

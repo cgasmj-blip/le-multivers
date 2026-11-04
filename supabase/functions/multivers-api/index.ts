@@ -303,7 +303,7 @@ Deno.serve(async req=>{
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
  }
- if(action==='setup-bewte-filter')return new Response(JSON.stringify(await setupBewteFilter(["(?i)[bB8ƅЬ𝐁𝐛𝗕𝗯𝙱𝚋ＢｂⒷⓑ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+[^\\p{L}\\p{N}]*[wWŵẃẁẅѡω𝐖𝐰𝗪𝘄𝚆𝚠ＷｗⓌⓦ]+[^\\p{L}\\p{N}]*[tTťţṫṭ7𝐓𝐭𝗧𝘁𝚃𝚝ＴｔⓉⓣ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+"])),{headers:cors});
+ if(action==='setup-bewte-filter')return new Response(JSON.stringify(await setupBewteFilter(["(?i)[bB8ƅЬ𝐁𝐛𝗕𝗯𝙱𝚋ＢｂⒷⓑ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+[^\\p{L}\\p{N}]*(?:[wWŵẃẁẅѡω𝐖𝐰𝗪𝘄𝚆𝚠ＷｗⓌⓦ]+|v+[^\\p{L}\\p{N}]*v+)[^\\p{L}\\p{N}]*[tTťţṫṭ7𝐓𝐭𝗧𝘁𝚃𝚝ＴｔⓉⓣ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+"])),{headers:cors});
  if(action==='style-all-roles'){
  const roles=await discord(`/guilds/${GUILD}/roles`),changes=[];
  for(const role of roles){

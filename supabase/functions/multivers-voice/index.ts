@@ -62,12 +62,17 @@ async function handleVoice(state,launchers){
  if(before&&before!==state.channel_id){const old=(await db(`mv_temporary_voices?channel_id=eq.${before}`))[0];if(old)await removeEmpty(old);}
 }
 const BEWTE_RULE='1567658000452161630';
+function randomReplyIndex(max){
+ const values=new Uint32Array(1),limit=4294967296-4294967296%max;
+ do{crypto.getRandomValues(values)}while(values[0]>=limit);
+ return values[0]%max;
+}
 async function handleWordBlock(event,eventKey){
  if(event.guild_id!==GUILD||event.rule_id!==BEWTE_RULE||event.action?.type!==1)return;
  if(!/^[0-9]{17,20}$/.test(event.channel_id||'')||!/^[0-9]{17,20}$/.test(event.user_id||''))return;
  if(eventKey&&!await db('rpc/mv_claim_notification','POST',{p_key:'bewte-reply:'+eventKey}))return;
- const lines=['Ton clavier a tenté une esquive, mon filtre a gagné. Bien tenté 😏','Même avec un déguisement, ce mot ne passe pas mon portail. Essaie un autre sort 😎','Tu pensais contourner Multix ? Mon filtre avait déjà préparé le contre-sort ✨'];
- const line=lines[Number(BigInt(event.user_id)%BigInt(lines.length))];
+ const lines=["Ton clavier a tenté une esquive, mon filtre a gagné. Bien tenté 😏","Même avec un déguisement, ce mot ne passe pas mon portail. Essaie un autre sort 😎","Tu pensais contourner Multix ? Mon filtre avait déjà préparé le contre-sort ✨","Tentative de passage en douce détectée. Le portail était fermé, pourtant 🚪","Joli camouflage. Dommage, j’ai équipé la vision nocturne 🤖","Ton message a tenté un speedrun. Éliminé au premier checkpoint 🏁","Le filtre : 1. Ton plan secret : 0. On remet ça ? 🎮","Tu as lancé une attaque surprise. J’avais une carte piège 🃏","Message intercepté en orbite. Retour à la case clavier 🪐","Le boss de fin, c’est moi. Et cette attaque ne traverse pas mon bouclier 🛡️","Tu as changé la tenue du mot, pas sa carte d’identité 🕵️","Une tentative ambitieuse… pour une porte marquée « accès refusé » 😌","Mon radar a fait bip. Ton message a fait pouf 📡","Tu as tenté le mode furtif avec les chaussures qui couinent 👟","Belle passe, mais Multix était dans les cages 🥅","Tu pensais avoir trouvé une faille ? C’était la porte du placard 🧹","J’ai vu le coup venir depuis une autre dimension 🌌","Ton sort a été contré. Il te reste plein d’autres mots dans l’inventaire 🪄","Ce message voulait devenir une légende. Il est devenu un écran de chargement ⏳","La mission infiltration vient de se transformer en tutoriel 😏","Ton clavier improvise, mon filtre connaît déjà la partition 🎵","Tu as invoqué le mot interdit. J’ai invoqué la gomme magique 🧽","Pas de passage VIP pour ce mot, même avec des lunettes de soleil 🕶️","Portail fermé. Merci de reformuler avec davantage de créativité ✨"];
+ const line=lines[randomReplyIndex(lines.length)];
  await discord(`/channels/${event.channel_id}/messages`,'POST',{content:`<@${event.user_id}> ${line}`,allowed_mentions:{parse:[],users:[event.user_id]}});
 }
 

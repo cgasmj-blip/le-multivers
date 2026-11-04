@@ -261,7 +261,9 @@ async function setupBewteFilter(patterns){
  const rules=await discord(`/guilds/${GUILD}/auto-moderation/rules`);
  const existing=rules.find(r=>r.name==='Multix · Filtre bewte');
  const data={name:'Multix · Filtre bewte',event_type:1,trigger_type:1,trigger_metadata:{keyword_filter:['*bewte*'],regex_patterns:patterns},enabled:true,exempt_roles:[],exempt_channels:[],actions:[{type:1,metadata:{custom_message:'Multix : ton message a perdu son duel contre mon filtre. Même déguisé, ce mot ne passe pas. Bien tenté 😏'}}]};
- const rule=await discord(`/guilds/${GUILD}/auto-moderation/rules`+(existing?'/'+existing.id:''),existing?'PATCH':'POST',data);
+ if(existing)delete data.trigger_type;
+ const response=await fetch('https://discord.com/api/v10'+`/guilds/${GUILD}/auto-moderation/rules`+(existing?'/'+existing.id:''),{method:existing?'PATCH':'POST',headers:{Authorization:'Bot '+Deno.env.get('DISCORD_BOT_TOKEN')?.trim(),'Content-Type':'application/json'},body:JSON.stringify(data)});
+ const rule=await response.json();if(!response.ok)throw new HttpError('Filtre Discord '+response.status+' : '+JSON.stringify(rule),502);
  return {rule_id:rule.id,enabled:rule.enabled,patterns:rule.trigger_metadata.regex_patterns,custom_message:rule.actions[0].metadata.custom_message};
 }
 
@@ -303,7 +305,7 @@ Deno.serve(async req=>{
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
  }
- if(action==='setup-bewte-filter')return new Response(JSON.stringify(await setupBewteFilter(["(?i)[bB8ƅЬ𝐁𝐛𝗕𝗯𝙱𝚋ＢｂⒷⓑ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+[^\\p{L}\\p{N}]*(?:[wWŵẃẁẅѡω𝐖𝐰𝗪𝘄𝚆𝚠ＷｗⓌⓦ]+|v+[^\\p{L}\\p{N}]*v+)[^\\p{L}\\p{N}]*[tTťţṫṭ7𝐓𝐭𝗧𝘁𝚃𝚝ＴｔⓉⓣ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+"])),{headers:cors});
+ if(action==='setup-bewte-filter')return new Response(JSON.stringify(await setupBewteFilter(["(?i)[bB8ƅЬ𝐁𝐛𝗕𝗯𝙱𝚋ＢｂⒷⓑ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+[^\\p{L}\\p{N}]*[wWŵẃẁẅѡω𝐖𝐰𝗪𝘄𝚆𝚠ＷｗⓌⓦ]+[^\\p{L}\\p{N}]*[tTťţṫṭ7𝐓𝐭𝗧𝘁𝚃𝚝ＴｔⓉⓣ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+","(?i)[bB8ƅЬ𝐁𝐛𝗕𝗯𝙱𝚋ＢｂⒷⓑ]+[\\s._*~|/\\-​-‏﻿]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+[\\s._*~|/\\-​-‏﻿]*v+[\\s._*~|/\\-​-‏﻿]*v+[\\s._*~|/\\-​-‏﻿]*[tTťţṫṭ7𝐓𝐭𝗧𝘁𝚃𝚝ＴｔⓉⓣ]+[\\s._*~|/\\-​-‏﻿]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+"])),{headers:cors});
  if(action==='style-all-roles'){
  const roles=await discord(`/guilds/${GUILD}/roles`),changes=[];
  for(const role of roles){

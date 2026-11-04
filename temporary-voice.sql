@@ -28,7 +28,7 @@ create function public.mv_acquire_gateway(p_lease uuid) returns setof public.mv_
 $$;
 create function public.mv_voice_snapshot(p_states jsonb) returns void language plpgsql security invoker set search_path='' as $$
 begin
- delete from public.mv_voice_presence;
+ delete from public.mv_voice_presence where user_id is not null;
  insert into public.mv_voice_presence(user_id,channel_id)
  select x->>'user_id',x->>'channel_id' from jsonb_array_elements(p_states) x;
 end $$;

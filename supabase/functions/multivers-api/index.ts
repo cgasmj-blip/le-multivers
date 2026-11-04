@@ -257,6 +257,14 @@ async function syncBadgeRoles(onlyUser){
 }
 async function safeBadgeSync(user){try{return await syncBadgeRoles(user)}catch(e){console.error('badge-role-sync',e.message);return {failed:1,error:e.message}}}
 
+async function setupBewteFilter(patterns){
+ const rules=await discord(`/guilds/${GUILD}/auto-moderation/rules`);
+ const existing=rules.find(r=>r.name==='Multix · Filtre bewte');
+ const data={name:'Multix · Filtre bewte',event_type:1,trigger_type:1,trigger_metadata:{keyword_filter:['*bewte*'],regex_patterns:patterns},enabled:true,exempt_roles:[],exempt_channels:[],actions:[{type:1,metadata:{custom_message:'Multix : ton message a perdu son duel contre mon filtre. Même déguisé, ce mot ne passe pas. Bien tenté 😏'}}]};
+ const rule=await discord(`/guilds/${GUILD}/auto-moderation/rules`+(existing?'/'+existing.id:''),existing?'PATCH':'POST',data);
+ return {rule_id:rule.id,enabled:rule.enabled,patterns:rule.trigger_metadata.regex_patterns,custom_message:rule.actions[0].metadata.custom_message};
+}
+
 Deno.serve(async req=>{
  if(req.method==='OPTIONS')return new Response(null,{headers:cors});
  try{
@@ -273,7 +281,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'||action==='audit-role-emojis'||action==='fix-role-emojis'||action==='style-all-roles'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'||action==='audit-role-emojis'||action==='fix-role-emojis'||action==='style-all-roles'||action==='setup-bewte-filter'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -295,6 +303,7 @@ Deno.serve(async req=>{
  const announcement=await safeAnnouncement(event.id),participants=await safeNotify(event.id);await syncRoles();
  return new Response(JSON.stringify({event:(await db(`mv_events?id=eq.${event.id}`))[0],restored,failed,announcement,participants}),{headers:cors});
  }
+ if(action==='setup-bewte-filter')return new Response(JSON.stringify(await setupBewteFilter(["(?i)[bB8ƅЬ𝐁𝐛𝗕𝗯𝙱𝚋ＢｂⒷⓑ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+[^\\p{L}\\p{N}]*[wWŵẃẁẅѡω𝐖𝐰𝗪𝘄𝚆𝚠ＷｗⓌⓦ]+[^\\p{L}\\p{N}]*[tTťţṫṭ7𝐓𝐭𝗧𝘁𝚃𝚝ＴｔⓉⓣ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+"])),{headers:cors});
  if(action==='style-all-roles'){
  const roles=await discord(`/guilds/${GUILD}/roles`),changes=[];
  for(const role of roles){

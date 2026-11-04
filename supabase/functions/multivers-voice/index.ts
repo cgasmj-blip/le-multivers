@@ -61,6 +61,16 @@ async function handleVoice(state,launchers){
  }
  if(before&&before!==state.channel_id){const old=(await db(`mv_temporary_voices?channel_id=eq.${before}`))[0];if(old)await removeEmpty(old);}
 }
+const BEWTE_RULE='1567658000452161630';
+async function handleWordBlock(event,eventKey){
+ if(event.guild_id!==GUILD||event.rule_id!==BEWTE_RULE||event.action?.type!==1)return;
+ if(!/^[0-9]{17,20}$/.test(event.channel_id||'')||!/^[0-9]{17,20}$/.test(event.user_id||''))return;
+ if(eventKey&&!await db('rpc/mv_claim_notification','POST',{p_key:'bewte-reply:'+eventKey}))return;
+ const lines=['Ton clavier a tenté une esquive, mon filtre a gagné. Bien tenté 😏','Même avec un déguisement, ce mot ne passe pas mon portail. Essaie un autre sort 😎','Tu pensais contourner Multix ? Mon filtre avait déjà préparé le contre-sort ✨'];
+ const line=lines[Number(BigInt(event.user_id)%BigInt(lines.length))];
+ await discord(`/channels/${event.channel_id}/messages`,'POST',{content:`<@${event.user_id}> ${line}`,allowed_mentions:{parse:[],users:[event.user_id]}});
+}
+
 async function startGateway(lease,session){
  let ws,heartbeat,stopTimer,seq=session.seq,sessionId=session.session_id,resumeUrl=session.resume_url,acked=true,done=false,queue=Promise.resolve();
  const launchers=await db('mv_voice_launchers');
@@ -74,7 +84,7 @@ async function startGateway(lease,session){
  let p;try{p=JSON.parse(event.data)}catch{return}
  if(p.op===10){
  if(sessionId&&seq!==null)ws.send(JSON.stringify({op:6,d:{token:token(),session_id:sessionId,seq}}));
- else ws.send(JSON.stringify({op:2,d:{token:token(),intents:129,properties:{os:'linux',browser:'Multix',device:'Multix'},presence:{status:'online',since:null,activities:[],afk:false}}}));
+ else ws.send(JSON.stringify({op:2,d:{token:token(),intents:2097281,properties:{os:'linux',browser:'Multix',device:'Multix'},presence:{status:'online',since:null,activities:[],afk:false}}}));
  const beat=()=>{if(!acked){finish('Heartbeat Discord sans réponse');return}if(ws.readyState===WebSocket.OPEN){acked=false;ws.send(JSON.stringify({op:1,d:seq}))}};
  beat();heartbeat=setInterval(beat,p.d.heartbeat_interval);return;
  }
@@ -89,6 +99,7 @@ async function startGateway(lease,session){
  for(const v of p.d.voice_states||[]){if(launchers.some(l=>l.channel_id===v.channel_id)){const member=v.member||(p.d.members||[]).find(m=>m.user?.id===v.user_id);await handleVoice({...v,member,guild_id:GUILD},launchers);}}
  const temps=await db('mv_temporary_voices');for(const t of temps)await removeEmpty(t);
  }
+ if(p.t==='AUTO_MODERATION_ACTION_EXECUTION')await handleWordBlock(p.d,sessionId+':'+p.s);
  if(p.t==='VOICE_STATE_UPDATE'&&p.d.guild_id===GUILD)await handleVoice(p.d,launchers);
  seq=p.s;await save({last_event_at:new Date().toISOString(),last_error:null});
  }).catch(async e=>{console.error('temporary-voice',e.message);await save({last_error:e.message}).catch(()=>{});});

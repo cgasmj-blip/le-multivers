@@ -93,3 +93,9 @@ Tests : `node --test tests/api.test.cjs tests/interactions.test.cjs`.
 - Dans les 14 catégories de jeux strictement entre Événements et Assistance, rejoindre `➕・Créer un vocal` crée un salon dans la même catégorie avec ses permissions héritées puis y déplace le membre. Le salon est supprimé quand sa dernière personne quitte. Les salons existants hors gestion Multix ne sont jamais supprimés.
 - `mv_voice_launchers`, `mv_temporary_voices`, `mv_voice_presence`, `mv_gateway_session` sont exclusivement accessibles au service. `multivers-voice` vérifie le secret du cron avant chaque opération. Le token Discord reste dans les secrets Edge, sans copie en base ou dans GitHub.
 - Les fichiers `temporary-voice.sql` et `badge-discord-roles.sql` documentent les migrations installées ; ne pas les rejouer sur une base déjà configurée. Tests : `node --test tests/*.test.cjs`.
+
+## Filtre de mot Multix
+
+La règle AutoMod `Multix · Filtre bewte` bloque les nouveaux messages et leurs modifications avant publication, avec une explication taquine privée. Le filtre couvre les variantes courantes : casse, accents, répétitions, substitutions de chiffres, séparateurs, caractères invisibles et plusieurs alphabets stylisés. Aucune détection textuelle ne couvre toutes les substitutions imaginables ni le texte dans les images. Les anciens messages ne sont pas purgés.
+
+Le worker reçoit `AUTO_MODERATION_ACTION_EXECUTION` via l’intent non privilégié `AUTO_MODERATION_EXECUTION`. Une réponse légère est envoyée dans le salon en mentionnant uniquement l’auteur ; déduplication persistante des seuls événements rejoués par Discord, sans limite de fréquence ajoutée par Multix. Les autres règles AutoMod ne déclenchent aucune réplique. Aucun contenu de message n’est enregistré par cette fonction. Discord exempte nativement les administrateurs et les membres avec Gérer le serveur, ainsi que les bots, des règles AutoMod.

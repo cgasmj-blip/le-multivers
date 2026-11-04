@@ -17,3 +17,25 @@ test('A temporary voice remains while another person is present',async()=>{const
 test('Joining the launcher again reuses the existing voice instead of duplicating it',async()=>{const f=voiceFixture();const s={guild_id:'1187492291892486195',user_id:'user',channel_id:'launcher'};await f.c.handleVoice(s,f.launchers);await f.c.handleVoice(s,f.launchers);assert.equal(f.created.length,1);assert.equal(f.deleted.length,0)});
 test('Bots and other guilds never create temporary voices',async()=>{const f=voiceFixture();await f.c.handleVoice({guild_id:'other',user_id:'user',channel_id:'launcher'},f.launchers);await f.c.handleVoice({guild_id:'1187492291892486195',user_id:'bot',channel_id:'launcher',member:{user:{bot:true}}},f.launchers);assert.equal(f.created.length,0)});
 test('A resource moved outside its category is never deleted',async()=>{const f=voiceFixture();f.channels.set('wrong',{id:'wrong',type:2,guild_id:'1187492291892486195',parent_id:'other'});await assert.rejects(()=>f.c.removeEmpty({channel_id:'wrong',launcher_id:'launcher'}));assert.equal(f.deleted.length,0)});
+
+const BEWTE_PATTERN="(?i)[bB8ƅЬ𝐁𝐛𝗕𝗯𝙱𝚋ＢｂⒷⓑ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+[^\\p{L}\\p{N}]*[wWŵẃẁẅѡω𝐖𝐰𝗪𝘄𝚆𝚠ＷｗⓌⓦ]+[^\\p{L}\\p{N}]*[tTťţṫṭ7𝐓𝐭𝗧𝘁𝚃𝚝ＴｔⓉⓣ]+[^\\p{L}\\p{N}]*[eEéèêëēėę3€𝐄𝐞𝗘𝗲𝙴𝚎ＥｅⒺⓔ]+";
+test('The word filter catches obfuscations while keeping unrelated text',()=>{
+ const re=new RegExp(BEWTE_PATTERN.slice(4),'iu');
+ for(const word of ['bewte','BEWTE','béwté','b3w73','b e w t e','b.e.w.t.e','beeeewwwtteee','𝐛𝐞𝐰𝐭𝐞','ＢＥＷＴＥ','𝚋𝚎𝚠𝚝𝚎','b\u200be\u200bw\u200bt\u200be'])assert(re.test(word),word);
+ for(const word of ['bonjour','belle soirée','beauty','bewildered'])assert(!re.test(word),word);
+ assert(BEWTE_PATTERN.length<=260);
+});
+test('Every blocked attempt gets a reply; only replaying the identical event is deduplicated',async()=>{
+ const {c}=runtime();const sent=[],seen=new Set();
+ c.db=async(path,method,body)=>{if(seen.has(body.p_key))return false;seen.add(body.p_key);return true;};
+ c.discord=async(path,method,body)=>sent.push({path,method,body});
+ const event={guild_id:'1187492291892486195',rule_id:'1567658000452161630',action:{type:1},channel_id:'1564005454961578114',user_id:'497181585989435392'};
+ await c.handleWordBlock(event,'session:10');await c.handleWordBlock(event,'session:10');await c.handleWordBlock(event,'session:11');
+ assert.equal(sent.length,2);assert.equal(sent[0].method,'POST');assert.deepEqual(Array.from(sent[0].body.allowed_mentions.users),[event.user_id]);assert.equal(sent[0].body.allowed_mentions.parse.length,0);assert(!sent[0].body.content.toLowerCase().includes('bewte'));
+});
+test('Other AutoMod rules and malformed events never trigger a reply',async()=>{
+ const {c}=runtime();c.db=async()=>{throw new Error('Must not touch database')};
+ await c.handleWordBlock({guild_id:'1187492291892486195',rule_id:'other',action:{type:1}});
+ await c.handleWordBlock({guild_id:'1187492291892486195',rule_id:'1567658000452161630',action:{type:2}});
+ await c.handleWordBlock({guild_id:'other',rule_id:'1567658000452161630',action:{type:1}});
+});

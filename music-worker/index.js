@@ -1,5 +1,8 @@
 import { createPublicKey, verify } from 'node:crypto';
 import { createServer } from 'node:http';
+import { lookup } from 'node:dns/promises';
+import { get as httpsGet } from 'node:https';
+import { BlockList, isIP } from 'node:net';
 import { spawn } from 'node:child_process';
 import { Readable, pipeline } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -24,10 +27,9 @@ const publicKey = createPublicKey({
 });
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 const commands = [
-  { name: 'play', description: 'Ajoute un fichier, une radio ou une vidéo YouTube à la file', options: [
+  { name: 'play', description: 'Joue un lien audio, une vidéo YouTube ou un fichier', options: [
+    { type: 3, name: 'lien', description: 'Lien YouTube ou lien direct vers un fichier audio ou un flux radio' },
     { type: 11, name: 'fichier', description: 'Fichier audio à lire' },
-    { type: 3, name: 'radio', description: 'Nom d’une radio configurée' },
-    { type: 3, name: 'youtube', description: 'Lien vers une vidéo YouTube' },
   ] },
   { name: 'pause', description: 'Met la musique en pause' },
   { name: 'resume', description: 'Reprend la lecture' },
@@ -65,6 +67,69 @@ function armIdle(current) {
   }, 30_000);
 }
 
+const nonPublic = new BlockList();
+for (const [address, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+  ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
+  ['203.0.113.0', 24], ['224.0.0.0', 3],
+]) nonPublic.addSubnet(address, prefix);
+for (const [address, prefix] of [
+  ['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['3fff::', 20],
+]) nonPublic.addSubnet(address, prefix, 'ipv6');
+
+const globalV6 = new BlockList();
+globalV6.addSubnet('2000::', 3, 'ipv6');
+
+function isPublicAddress(address, family) {
+  if (family === 4) return !nonPublic.check(address);
+  return family === 6 && globalV6.check(address, 'ipv6') && !nonPublic.check(address, 'ipv6');
+}
+
+function httpsAudioUrl(value) {
+  let url;
+  try { url = new URL(value); }
+  catch { throw new Error('Colle un lien HTTPS complet.'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) {
+    throw new Error('Choisis un lien HTTPS public.');
+  }
+  return url;
+}
+
+async function openPublicAudio(value, signal, redirects = 0) {
+  const url = httpsAudioUrl(value);
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  const family = isIP(hostname);
+  const addresses = family ? [{ address: hostname, family }] : await lookup(hostname, { all: true });
+  if (!addresses.length || addresses.some(({ address, family }) => !isPublicAddress(address, family))) {
+    throw new Error('Le lien ne pointe pas vers une adresse publique.');
+  }
+  signal.throwIfAborted();
+  const { address, family: resolvedFamily } = addresses[0];
+  const response = await new Promise((resolve, reject) => {
+    // Keep the checked address pinned for the connection, including after a redirect.
+    const request = httpsGet(url, {
+      signal, agent: false, family: resolvedFamily,
+      lookup: (_hostname, options, callback) => {
+        if (options.all) callback(null, [{ address, family: resolvedFamily }]);
+        else callback(null, address, resolvedFamily);
+      },
+    }, resolve);
+    request.once('error', reject);
+  });
+  if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+    response.destroy();
+    if (redirects >= 3 || !response.headers.location) throw new Error('Lien redirigé trop souvent.');
+    return openPublicAudio(new URL(response.headers.location, url), signal, redirects + 1);
+  }
+  const type = response.headers['content-type'] ?? '';
+  if (response.statusCode !== 200 || !/^(?:audio\/|video\/|application\/octet-stream(?:;|$))/i.test(type)) {
+    response.destroy();
+    throw new Error('Ce lien ne fournit pas un flux audio ou vidéo direct.');
+  }
+  return response;
+}
+
 function openYouTubeAudio(url, abort) {
   const process = spawn('yt-dlp', [
     '--ignore-config', '--no-playlist', '--no-progress', '--js-runtimes', 'node',
@@ -87,6 +152,8 @@ async function playNext(current) {
       let input;
       if (item.youtube) {
         input = openYouTubeAudio(item.url, abort);
+      } else if (item.direct) {
+        input = await openPublicAudio(item.url, abort.signal);
       } else {
         const response = await fetch(item.url, { signal: abort.signal, redirect: 'error' });
         if (!response.ok || !response.body) throw new Error('Source indisponible');
@@ -168,12 +235,25 @@ function youtubeItem(value) {
   return { name: 'YouTube · ' + videoId, url: 'https://www.youtube.com/watch?v=' + videoId, youtube: true };
 }
 
+function linkItem(value) {
+  const url = httpsAudioUrl(value);
+  if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'].includes(url.hostname)) {
+    return youtubeItem(url.href);
+  }
+  if (url.hostname === 'open.spotify.com' || url.hostname === 'spotify.link') {
+    throw new Error('Ce lien Spotify n’est pas un flux audio direct. Essaie le lien YouTube du morceau ou joins un fichier.');
+  }
+  return { name: 'Lien audio · ' + url.hostname, url: url.href, direct: true };
+}
+
 function getItem(interaction) {
   const options = interaction.data.options ?? [];
   const fileId = options.find(option => option.name === 'fichier')?.value;
   const radio = options.find(option => option.name === 'radio')?.value;
   const youtube = options.find(option => option.name === 'youtube')?.value;
-  if ([fileId, radio, youtube].filter(Boolean).length !== 1) throw new Error('Choisis une seule source audio.');
+  const link = options.find(option => option.name === 'lien')?.value;
+  if ([fileId, radio, youtube, link].filter(Boolean).length !== 1) throw new Error('Choisis un lien ou un fichier audio.');
+  if (link) return linkItem(link);
   if (youtube) return youtubeItem(youtube);
   if (radio) {
     const url = stations.get(radio);
@@ -207,7 +287,7 @@ async function run(interaction) {
     if (current.queue.length >= 10) throw new Error('La file contient déjà 10 morceaux.');
     current.queue.push(item);
     if (current.track) return 'Ajouté à la file — ' + item.name;
-    return await playNext(current) ? 'Lecture — ' + item.name : (item.youtube ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.' : 'Cette source audio est indisponible.');
+    return await playNext(current) ? 'Lecture — ' + item.name : (item.youtube ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.' : 'Ce lien ou ce fichier ne fournit pas un flux que Multix peut lire.');
   }
   const current = session;
   if (name === 'stop' && current) {

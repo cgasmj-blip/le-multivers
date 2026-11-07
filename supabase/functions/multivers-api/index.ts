@@ -283,7 +283,7 @@ Deno.serve(async req=>{
  return new Response(JSON.stringify(events.map(e=>{const enrolled=registrations.filter(r=>r.event_id===e.id).length;return {event_id:e.id,capacity:e.capacity,enrolled,remaining:Math.max(0,e.capacity-enrolled)}})),{headers:cors});
  }
 
- if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'||action==='audit-role-emojis'||action==='fix-role-emojis'||action==='style-all-roles'||action==='setup-bewte-filter'){
+ if(action==='sync'||action==='check-discord'||action==='test-messages'||action==='check-category'||action==='test-session'||action==='rename-event-voices'||action==='normalize-channels'||action==='setup-community'||action==='inspect-recovery'||action==='restore-programme'||action==='test-community-messages'||action==='clear-community-tests'||action==='sync-badge-founders'||action==='inspect-voice-setup'||action==='setup-profile-command'||action==='setup-badge-discord'||action==='audit-role-emojis'||action==='fix-role-emojis'||action==='style-all-roles'||action==='setup-bewte-filter'||action==='setup-ai-commands'){
  const secret=req.headers.get('x-cron-secret');if(!secret||!await db('rpc/mv_verify_cron','POST',{p_secret:secret}))throw new HttpError('Accès interdit',403);
  if(action==='inspect-recovery'||action==='restore-programme'){
  const settings=(await db('mv_settings?id=eq.true'))[0];const messages=await discord(`/channels/${settings.announcement_channel_id}/messages?limit=100`);
@@ -328,6 +328,21 @@ Deno.serve(async req=>{
  if(action==='inspect-voice-setup'){
  const channels=await discord(`/guilds/${GUILD}/channels`);const bot=await discord('/users/@me');const member=await discord(`/guilds/${GUILD}/members/${bot.id}`);const roles=await discord(`/guilds/${GUILD}/roles`);
  return new Response(JSON.stringify({channels:channels.map(c=>({id:c.id,name:c.name,type:c.type,parent_id:c.parent_id,position:c.position})),bot_roles:member.roles,permissions:roles.filter(r=>r.id===GUILD||member.roles.includes(r.id)).map(r=>({name:r.name,permissions:r.permissions})),commands:await discord(`/applications/1566913973687812286/guilds/${GUILD}/commands`)}),{headers:cors});
+ }
+ if(action==='setup-ai-commands'){
+ const commands=[
+  {name:'multix',description:'Pose une question à Multix. La réponse est publiée dans ce salon.',option:'question',label:'Ta question pour Multix'},
+  {name:'image',description:'Génère une image que Multix publie dans ce salon.',option:'description',label:'Décris l’image à créer'}
+ ];
+ const registered=[];
+ for(const command of commands){
+  const result=await discord(`/applications/1566913973687812286/guilds/${GUILD}/commands`,'POST',{
+   name:command.name,description:command.description,type:1,
+   options:[{type:3,name:command.option,description:command.label,required:true,min_length:1,max_length:1500}]
+  });
+  registered.push({name:result.name,id:result.id});
+ }
+ return Response.json({commands:registered,configured:!!Deno.env.get('OPENAI_API_KEY')?.trim()});
  }
  if(action==='setup-profile-command'){
  const command=await discord(`/applications/1566913973687812286/guilds/${GUILD}/commands`,'POST',{name:'profil',description:'Voir les badges et la collection cosmique d’un membre',type:1,options:[{name:'membre',description:'Le membre dont tu veux consulter les badges',type:6,required:false}]});

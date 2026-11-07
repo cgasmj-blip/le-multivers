@@ -82,12 +82,93 @@ async function relayMusic(raw,signature,timestamp){
  return reply('Le service musique est momentanément indisponible.');
 }
 
+async function aiReply(interaction, payload, image) {
+ const url = 'https://discord.com/api/v10/webhooks/' + APP + '/' + interaction.token + '/messages/@original';
+ payload.allowed_mentions = { parse: [] };
+ const options = { method: 'PATCH', signal: AbortSignal.timeout(12000) };
+ if (image) {
+  const form = new FormData();
+  payload.attachments = [{ id: 0, filename: 'multix.jpg' }];
+  form.append('payload_json', JSON.stringify(payload));
+  form.append('files[0]', new Blob([image], { type: 'image/jpeg' }), 'multix.jpg');
+  options.body = form;
+ } else {
+  options.headers = { 'Content-Type': 'application/json' };
+  options.body = JSON.stringify(payload);
+ }
+ const response = await fetch(url, options);
+ if (!response.ok) throw new Error('Réponse Discord refusée (' + response.status + ').');
+}
+
+function openAiError(status) {
+ if (status === 401) return 'La clé OpenAI doit être vérifiée dans Supabase.';
+ if (status === 403 || status === 404) return 'Le projet OpenAI de Multix doit avoir accès à ce modèle.';
+ if (status === 429) return 'Le quota ou la limite de débit OpenAI est atteint.';
+ if (status === 400) return 'OpenAI a refusé cette demande. Essaie de la reformuler.';
+ return 'Le service OpenAI est momentanément indisponible.';
+}
+
+async function runAi(interaction, kind, prompt, key) {
+ try {
+  const allowed = await db('rpc/mv_claim_ai', 'POST', { p_kind: kind, p_interaction: interaction.id });
+  if (!allowed) {
+   await aiReply(interaction, { content: 'La limite quotidienne de cette commande est atteinte.' });
+   return;
+  }
+  const isImage = kind === 'image';
+  const model = Deno.env.get(isImage ? 'OPENAI_IMAGE_MODEL' : 'OPENAI_TEXT_MODEL')
+   || (isImage ? 'gpt-image-2.5-flare' : 'gpt-5.6-terra');
+  const body = isImage
+   ? { model, prompt, size: '1024x1024', quality: 'low', complexity: 'low', output_format: 'jpeg' }
+   : { model, input: prompt, store: false, max_output_tokens: 1200,
+       instructions: 'Tu es Multix, assistant du serveur Discord Le Multivers. Réponds dans la langue de la question, de manière claire et concise, en moins de 1700 caractères. Tu ne peux pas administrer Discord ni consulter les conversations privées.' };
+  const response = await fetch('https://api.openai.com/v1/' + (isImage ? 'images/generations' : 'responses'), {
+   method: 'POST',
+   headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+   signal: AbortSignal.timeout(isImage ? 105000 : 45000),
+   body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+   await aiReply(interaction, { content: openAiError(response.status) });
+   return;
+  }
+  const result = await response.json();
+  if (isImage) {
+   const encoded = result.data?.[0]?.b64_json;
+   if (typeof encoded !== 'string' || !encoded || encoded.length > 12000000) throw new Error('Image non disponible');
+   const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+   await aiReply(interaction, { embeds: [{ title: '🎨 Création de Multix', color: 0x8758ff, image: { url: 'attachment://multix.jpg' } }] }, bytes);
+   return;
+  }
+  const answer = (result.output ?? []).flatMap(item => item.type === 'message' ? item.content ?? [] : [])
+   .filter(part => part.type === 'output_text' || part.type === 'refusal')
+   .map(part => part.text ?? part.refusal ?? '').join('\n').trim();
+  const content = answer.length > 1900 ? answer.slice(0, 1899) + '…' : answer;
+  await aiReply(interaction, { content: content || 'Multix n’a pas obtenu de réponse. Réessaie avec une question plus courte.' });
+ } catch (error) {
+  console.error('multix-ai', kind, error.name);
+  const content = error.name === 'TimeoutError' ? 'La demande a pris trop de temps. Réessaie dans un instant.' : 'Multix n’a pas pu terminer cette demande.';
+  try { await aiReply(interaction, { content }); } catch { console.error('multix-ai: reply unavailable'); }
+ }
+}
+
 Deno.serve(async req=>{if(req.method!=='POST')return new Response('Method not allowed',{status:405});try{
  const signature=req.headers.get('x-signature-ed25519'),timestamp=req.headers.get('x-signature-timestamp');if(!/^[a-f0-9]{128}$/i.test(signature||'')||!/^\d+$/.test(timestamp||'')||Math.abs(Date.now()/1000-Number(timestamp))>300)return new Response('Invalid signature',{status:401});
  const raw=await req.text();if(raw.length>25000)return new Response('Too large',{status:413});
  const valid=await crypto.subtle.verify({name:'Ed25519'},await verificationKey(),Uint8Array.from(signature.match(/../g),h=>parseInt(h,16)),new TextEncoder().encode(timestamp+raw));if(!valid)return new Response('Invalid signature',{status:401});
  const i=JSON.parse(raw);if(i.type===1)return Response.json({type:1});if(i.guild_id!==GUILD)return reply('Cette fonction est réservée au Multivers.');
  if(i.type===2&&['play','pause','resume','skip','stop','queue'].includes(i.data.name))return relayMusic(raw,signature,timestamp);
+ if(i.type===2&&['multix','image'].includes(i.data?.name)){
+ const kind=i.data.name==='image'?'image':'text';
+ const option=kind==='image'?'description':'question';
+ const prompt=i.data.options?.find(o=>o.name===option)?.value;
+ if(typeof prompt!=='string'||!prompt.trim()||prompt.length>1500)return reply('Écris une demande de 1 à 1500 caractères.');
+ const key=Deno.env.get('OPENAI_API_KEY')?.trim();
+ if(!key)return reply('Les commandes IA de Multix attendent la configuration de la clé OpenAI.');
+ if(i.application_id!==APP||!i.member?.user?.id||typeof i.token!=='string')return reply('Interaction Discord invalide.');
+ EdgeRuntime.waitUntil(runAi(i,kind,prompt.trim(),key));
+ return Response.json({type:5,data:{allowed_mentions:{parse:[]}}});
+ }
  if(i.type===2&&i.data.name==='profil'){EdgeRuntime.waitUntil(runProfile(i));return Response.json({type:5,data:{allowed_mentions:{parse:[]}}})}
  if(i.type===2&&i.data.name==='equipes'){EdgeRuntime.waitUntil(runTeams(i));return Response.json({type:5,data:{allowed_mentions:{parse:[]}}})}
  const actor=i.member?.user?.id;if(!actor)return reply('Compte Discord introuvable.');

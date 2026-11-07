@@ -110,11 +110,8 @@ function openAiError(status) {
 
 async function runAi(interaction, kind, prompt, key) {
  try {
-  const allowed = await db('rpc/mv_claim_ai', 'POST', { p_kind: kind, p_interaction: interaction.id });
-  if (!allowed) {
-   await aiReply(interaction, { content: 'La limite quotidienne de cette commande est atteinte.' });
-   return;
-  }
+  const firstDelivery = await db('rpc/mv_claim_notification', 'POST', { p_key: 'ai:' + interaction.id });
+  if (!firstDelivery) return;
   const isImage = kind === 'image';
   const model = Deno.env.get(isImage ? 'OPENAI_IMAGE_MODEL' : 'OPENAI_TEXT_MODEL')
    || (isImage ? 'gpt-image-2.5-flare' : 'gpt-5.6-terra');

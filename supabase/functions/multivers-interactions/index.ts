@@ -65,11 +65,29 @@ async function runProfile(i){
  if(!r.ok)console.error('profile-reply',r.status);
 }
 
+async function relayMusic(raw,signature,timestamp){
+ const destination=Deno.env.get('MULTIX_MUSIC_URL');
+ if(!destination)return reply('Le service musique de Multix attend son hébergement.');
+ try{
+  const url=new globalThis.URL(destination);
+  if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/discord')throw new Error('URL musique invalide');
+  const result=await fetch(url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(1800),headers:{
+   'Content-Type':'application/json','X-Signature-Ed25519':signature,'X-Signature-Timestamp':timestamp
+  },body:raw});
+  if(!result.ok)throw new Error('Service indisponible');
+  const ack=await result.json();
+  if(ack.type===5)return Response.json({type:5,data:{flags:64}});
+  if(ack.type===4&&typeof ack.data?.content==='string')return reply(ack.data.content.slice(0,1900));
+ }catch{}
+ return reply('Le service musique est momentanément indisponible.');
+}
+
 Deno.serve(async req=>{if(req.method!=='POST')return new Response('Method not allowed',{status:405});try{
  const signature=req.headers.get('x-signature-ed25519'),timestamp=req.headers.get('x-signature-timestamp');if(!/^[a-f0-9]{128}$/i.test(signature||'')||!/^\d+$/.test(timestamp||'')||Math.abs(Date.now()/1000-Number(timestamp))>300)return new Response('Invalid signature',{status:401});
  const raw=await req.text();if(raw.length>25000)return new Response('Too large',{status:413});
  const valid=await crypto.subtle.verify({name:'Ed25519'},await verificationKey(),Uint8Array.from(signature.match(/../g),h=>parseInt(h,16)),new TextEncoder().encode(timestamp+raw));if(!valid)return new Response('Invalid signature',{status:401});
  const i=JSON.parse(raw);if(i.type===1)return Response.json({type:1});if(i.guild_id!==GUILD)return reply('Cette fonction est réservée au Multivers.');
+ if(i.type===2&&['play','pause','resume','skip','stop','queue'].includes(i.data.name))return relayMusic(raw,signature,timestamp);
  if(i.type===2&&i.data.name==='profil'){EdgeRuntime.waitUntil(runProfile(i));return Response.json({type:5,data:{allowed_mentions:{parse:[]}}})}
  if(i.type===2&&i.data.name==='equipes'){EdgeRuntime.waitUntil(runTeams(i));return Response.json({type:5,data:{allowed_mentions:{parse:[]}}})}
  const actor=i.member?.user?.id;if(!actor)return reply('Compte Discord introuvable.');

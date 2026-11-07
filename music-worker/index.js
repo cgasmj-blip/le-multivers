@@ -82,17 +82,24 @@ async function updateMusicCard(current, status, track = current.track) {
   const body = { embeds: [embed], allowed_mentions: { parse: [] } };
   try {
     if (current.card) {
-      try {
-        await client.rest.patch(Routes.channelMessage(current.card.channelId, current.card.id), { body });
-        return;
-      } catch (error) {
-        if (error.code !== 10008) throw error;
-        current.card = undefined;
+      const { interaction, channelId, id } = current.card;
+      if (Date.now() < interaction.expiresAt) {
+        try {
+          await finish(interaction, body);
+          return;
+        } catch {
+          // A public interaction message can also be edited after its token expires.
+        }
       }
+      await client.rest.patch(Routes.channelMessage(channelId, id), { body });
+      return;
     }
     if (active) {
-      const message = await client.rest.post(Routes.channelMessages(track.textChannelId), { body });
-      current.card = { id: message.id, channelId: track.textChannelId };
+      const message = await finish(track.interaction, body);
+      current.card = {
+        id: message.id, channelId: message.channel_id ?? track.textChannelId,
+        interaction: track.interaction,
+      };
     }
   } catch (error) {
     console.warn('Carte musique indisponible', error.code ?? error.name);
@@ -240,6 +247,7 @@ async function playNext(current) {
     }
   }
   if (current.card && previousTrack) await updateMusicCard(current, 'Lecture terminée', previousTrack);
+  current.card = undefined;
   armIdle(current);
   return false;
 }
@@ -347,9 +355,16 @@ async function run(interaction) {
     const requesterAvatar = user.avatar && /^[a-f0-9_]+$/i.test(user.avatar)
       ? 'https://cdn.discordapp.com/avatars/' + user.id + '/' + user.avatar + '.png?size=64'
       : undefined;
-    current.queue.push({ ...item, requester: requester.slice(0, 100), requesterAvatar, textChannelId: interaction.channel_id });
+    const cardInteraction = { id: interaction.id, application_id: interaction.application_id, token: interaction.token, expiresAt: Date.now() + 14 * 60_000 };
+    current.queue.push({ ...item, requester: requester.slice(0, 100), requesterAvatar, textChannelId: interaction.channel_id, interaction: cardInteraction });
     if (current.track) return 'Ajouté à la file — ' + item.name;
-    return await playNext(current) ? '🎧 DJ Multix prend les platines — ' + item.name : (item.youtube ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.' : 'Ce lien ou ce fichier ne fournit pas un flux que Multix peut lire.');
+    if (await playNext(current)) {
+      if (current.card?.interaction.id === interaction.id) return;
+      return '🎧 DJ Multix prend les platines — ' + current.track.name;
+    }
+    return item.youtube
+      ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.'
+      : 'Ce lien ou ce fichier ne fournit pas un flux que Multix peut lire.';
   }
   const current = session;
   if (name === 'stop' && current) {
@@ -380,14 +395,16 @@ client.on('voiceStateUpdate', (before, after) => {
   if (!before.channel?.members.some(member => !member.user.bot)) void schedule(() => stopMusic(current));
 });
 
-async function finish(interaction, content) {
+async function finish(interaction, result) {
+  const body = typeof result === 'string' ? { content: result.slice(0, 1900) } : result;
   const url = 'https://discord.com/api/v10/webhooks/' + interaction.application_id + '/' + interaction.token + '/messages/@original';
   for (let attempt = 0; attempt < 5; attempt++) {
     const response = await fetch(url, {
       method: 'PATCH', signal: AbortSignal.timeout(5000), headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: content.slice(0, 1900), allowed_mentions: { parse: [] } }),
+      body: JSON.stringify({ ...body, allowed_mentions: { parse: [] } }),
     });
-    if (response.ok || ![404, 429].includes(response.status)) return;
+    if (response.ok) return response.json();
+    if (![404, 429].includes(response.status) || attempt === 4) throw new Error('Réponse Discord refusée (' + response.status + ')');
     const retryAfter = response.status === 429 ? Number(response.headers.get('retry-after')) : 0;
     await delay(Math.max(300 * (attempt + 1), Math.min(5000, (retryAfter || 0) * 1000)));
   }
@@ -422,14 +439,15 @@ const server = createServer(async (request, response) => {
         !names.has(interaction.data?.name)) return json(response, 400, {});
     if (pendingCommands >= 20) return json(response, 200, { type: 4, data: { content: 'Multix est occupé. Réessaie dans un instant.', flags: 64 } });
     for (const [id, expiry] of seen) if (expiry <= Date.now()) seen.delete(id);
-    json(response, 200, { type: 5, data: { flags: 64 } });
+    const flags = interaction.data.name === 'play' ? 0 : 64;
+    json(response, 200, { type: 5, data: { flags } });
     if (seen.has(interaction.id)) return;
     seen.set(interaction.id, Date.now() + 600_000);
     pendingCommands++;
     void schedule(async () => {
       try { return await run(interaction); }
       catch (error) { return error.message; }
-    }).then(content => finish(interaction, content))
+    }).then(content => content === undefined ? undefined : finish(interaction, content))
       .catch(() => console.warn('Réponse Discord indisponible'))
       .finally(() => { pendingCommands--; });
   } catch {

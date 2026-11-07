@@ -76,7 +76,7 @@ async function relayMusic(raw,signature,timestamp){
   },body:raw});
   if(!result.ok)throw new Error('Service indisponible');
   const ack=await result.json();
-  if(ack.type===5)return Response.json({type:5,data:{flags:64}});
+  if(ack.type===5)return Response.json({type:5,data:{flags:ack.data?.flags===0?0:64}});
   if(ack.type===4&&typeof ack.data?.content==='string')return reply(ack.data.content.slice(0,1900));
  }catch{}
  return reply('Le service musique est momentanément indisponible.');

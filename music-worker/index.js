@@ -24,9 +24,10 @@ const publicKey = createPublicKey({
 });
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 const commands = [
-  { name: 'play', description: 'Ajoute un fichier audio ou une radio à la file', options: [
+  { name: 'play', description: 'Ajoute un fichier, une radio ou une vidéo YouTube à la file', options: [
     { type: 11, name: 'fichier', description: 'Fichier audio à lire' },
     { type: 3, name: 'radio', description: 'Nom d’une radio configurée' },
+    { type: 3, name: 'youtube', description: 'Lien vers une vidéo YouTube' },
   ] },
   { name: 'pause', description: 'Met la musique en pause' },
   { name: 'resume', description: 'Reprend la lecture' },
@@ -64,6 +65,16 @@ function armIdle(current) {
   }, 30_000);
 }
 
+function openYouTubeAudio(url, abort) {
+  const process = spawn('yt-dlp', [
+    '--ignore-config', '--no-playlist', '--no-progress', '--js-runtimes', 'node',
+    '--socket-timeout', '10', '-f', 'bestaudio', '-o', '-', '--', url,
+  ], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+  process.once('error', () => process.stdout.destroy());
+  abort.signal.addEventListener('abort', () => process.kill('SIGKILL'), { once: true });
+  return process.stdout;
+}
+
 async function playNext(current) {
   if (session !== current) return;
   current.track?.abort.abort();
@@ -73,8 +84,14 @@ async function playNext(current) {
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(), 10_000);
     try {
-      const response = await fetch(item.url, { signal: abort.signal, redirect: 'error' });
-      if (!response.ok || !response.body) throw new Error('Source indisponible');
+      let input;
+      if (item.youtube) {
+        input = openYouTubeAudio(item.url, abort);
+      } else {
+        const response = await fetch(item.url, { signal: abort.signal, redirect: 'error' });
+        if (!response.ok || !response.body) throw new Error('Source indisponible');
+        input = Readable.fromWeb(response.body);
+      }
       clearTimeout(timeout);
       const ffmpeg = spawn('ffmpeg', [
         '-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'pipe',
@@ -88,9 +105,9 @@ async function playNext(current) {
       ffmpeg.once('error', () => {
         if (session === current && current.track === track) current.player.stop(true);
       });
-      pipeline(Readable.fromWeb(response.body), ffmpeg.stdin, () => {});
+      pipeline(input, ffmpeg.stdin, () => {});
       current.player.play(resource);
-      await entersState(current.player, AudioPlayerStatus.Playing, 8_000);
+      await entersState(current.player, AudioPlayerStatus.Playing, item.youtube ? 30_000 : 8_000);
       return true;
     } catch {
       current.track = undefined;
@@ -131,11 +148,33 @@ async function connect(channel) {
   return current;
 }
 
+function youtubeItem(value) {
+  let url;
+  try { url = new URL(value); }
+  catch { throw new Error('Colle un lien vers une vidéo YouTube.'); }
+  const hosts = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'];
+  let videoId;
+  if (url.protocol === 'https:' && !url.username && !url.password && !url.port) {
+    if (url.hostname === 'youtu.be') {
+      videoId = /^\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
+    } else if (hosts.includes(url.hostname)) {
+      videoId = url.pathname === '/watch' ? url.searchParams.get('v')
+        : /^\/(?:shorts|live|embed)\/([\w-]{11})\/?$/.exec(url.pathname)?.[1];
+    }
+  }
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId ?? '')) {
+    throw new Error('Colle un lien HTTPS vers une vidéo YouTube.');
+  }
+  return { name: 'YouTube · ' + videoId, url: 'https://www.youtube.com/watch?v=' + videoId, youtube: true };
+}
+
 function getItem(interaction) {
   const options = interaction.data.options ?? [];
   const fileId = options.find(option => option.name === 'fichier')?.value;
   const radio = options.find(option => option.name === 'radio')?.value;
-  if (Boolean(fileId) === Boolean(radio)) throw new Error('Choisis un fichier audio ou une seule radio.');
+  const youtube = options.find(option => option.name === 'youtube')?.value;
+  if ([fileId, radio, youtube].filter(Boolean).length !== 1) throw new Error('Choisis une seule source audio.');
+  if (youtube) return youtubeItem(youtube);
   if (radio) {
     const url = stations.get(radio);
     if (!url) throw new Error(stations.size ? 'Radios disponibles — ' + [...stations.keys()].join(', ') : 'Aucune radio n’est configurée.');
@@ -168,7 +207,7 @@ async function run(interaction) {
     if (current.queue.length >= 10) throw new Error('La file contient déjà 10 morceaux.');
     current.queue.push(item);
     if (current.track) return 'Ajouté à la file — ' + item.name;
-    return await playNext(current) ? 'Lecture — ' + item.name : 'Cette source audio est indisponible.';
+    return await playNext(current) ? 'Lecture — ' + item.name : (item.youtube ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.' : 'Cette source audio est indisponible.');
   }
   const current = session;
   if (name === 'stop' && current) {

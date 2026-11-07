@@ -6,7 +6,7 @@ import { BlockList, isIP } from 'node:net';
 import { spawn } from 'node:child_process';
 import { Readable, pipeline } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits } from 'discord.js';
+import { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, ActivityType } from 'discord.js';
 import { AudioPlayerStatus, VoiceConnectionStatus, StreamType, createAudioPlayer, createAudioResource, entersState, joinVoiceChannel } from '@discordjs/voice';
 
 const { DISCORD_BOT_TOKEN, DISCORD_PUBLIC_KEY, DISCORD_GUILD_ID, PORT = '8080' } = process.env;
@@ -38,6 +38,7 @@ const commands = [
   { name: 'queue', description: 'Affiche le morceau en cours et la file' },
 ];
 const names = new Set(commands.map(command => command.name));
+const DJ_NAME = 'DJ Multix · Fréquences galactiques';
 const allowedFormats = /\.(mp3|ogg|opus|wav|flac|m4a|aac|webm)$/i;
 let session;
 let serial = Promise.resolve();
@@ -52,6 +53,7 @@ function schedule(task) {
 function stopMusic(current) {
   if (session !== current) return;
   session = undefined;
+  client.user?.setActivity(null);
   clearTimeout(current.idleTimer);
   current.track?.abort.abort();
   current.player.stop(true);
@@ -208,6 +210,7 @@ async function connect(channel) {
   connection.on(VoiceConnectionStatus.Disconnected, () => { void schedule(() => stopMusic(current)); });
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 12_000);
+    client.user.setActivity(DJ_NAME, { type: ActivityType.Listening });
   } catch {
     stopMusic(current);
     throw new Error('Multix n’a pas réussi à rejoindre le vocal.');
@@ -287,7 +290,7 @@ async function run(interaction) {
     if (current.queue.length >= 10) throw new Error('La file contient déjà 10 morceaux.');
     current.queue.push(item);
     if (current.track) return 'Ajouté à la file — ' + item.name;
-    return await playNext(current) ? 'Lecture — ' + item.name : (item.youtube ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.' : 'Ce lien ou ce fichier ne fournit pas un flux que Multix peut lire.');
+    return await playNext(current) ? '🎧 DJ Multix prend les platines — ' + item.name : (item.youtube ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.' : 'Ce lien ou ce fichier ne fournit pas un flux que Multix peut lire.');
   }
   const current = session;
   if (name === 'stop' && current) {

@@ -6,7 +6,7 @@ import { BlockList, isIP } from 'node:net';
 import { spawn } from 'node:child_process';
 import { Readable, pipeline } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, ActivityType } from 'discord.js';
+import { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, ActivityType, Routes } from 'discord.js';
 import { AudioPlayerStatus, VoiceConnectionStatus, StreamType, createAudioPlayer, createAudioResource, entersState, joinVoiceChannel } from '@discordjs/voice';
 
 const { DISCORD_BOT_TOKEN, DISCORD_PUBLIC_KEY, DISCORD_GUILD_ID, PORT = '8080' } = process.env;
@@ -50,7 +50,56 @@ function schedule(task) {
   return result;
 }
 
-function stopMusic(current) {
+async function youtubeTitle(track) {
+  const endpoint = new URL('https://www.youtube.com/oembed');
+  endpoint.search = new URLSearchParams({ url: track.url, format: 'json' });
+  try {
+    const response = await fetch(endpoint, { redirect: 'error', signal: AbortSignal.timeout(1500) });
+    if (!response.ok) return;
+    const data = await response.json();
+    if (typeof data.title === 'string' && data.title.trim()) track.name = data.title.trim().slice(0, 200);
+  } catch {}
+}
+
+async function updateMusicCard(current, status, track = current.track) {
+  if (!track) return;
+  const active = status === 'En lecture' || status === 'En pause';
+  const embed = {
+    color: status === 'En lecture' ? 0x8758ff : status === 'En pause' ? 0xf4b942 : 0x657086,
+    author: { name: track.requester, ...(track.requesterAvatar ? { icon_url: track.requesterAvatar } : {}) },
+    title: track.name.slice(0, 256),
+    description: '**' + status + '** dans <#' + current.channel.id + '>',
+    footer: { text: 'DJ Multix · Fréquences galactiques' },
+    timestamp: new Date().toISOString(),
+  };
+  if (track.youtubeId) {
+    embed.url = track.url;
+    embed.thumbnail = { url: 'https://i.ytimg.com/vi/' + track.youtubeId + '/hqdefault.jpg' };
+  } else {
+    const avatar = client.user?.displayAvatarURL();
+    if (avatar) embed.thumbnail = { url: avatar };
+  }
+  const body = { embeds: [embed], allowed_mentions: { parse: [] } };
+  try {
+    if (current.card) {
+      try {
+        await client.rest.patch(Routes.channelMessage(current.card.channelId, current.card.id), { body });
+        return;
+      } catch (error) {
+        if (error.code !== 10008) throw error;
+        current.card = undefined;
+      }
+    }
+    if (active) {
+      const message = await client.rest.post(Routes.channelMessages(track.textChannelId), { body });
+      current.card = { id: message.id, channelId: track.textChannelId };
+    }
+  } catch (error) {
+    console.warn('Carte musique indisponible', error.code ?? error.name);
+  }
+}
+
+async function stopMusic(current) {
   if (session !== current) return;
   session = undefined;
   client.user?.setActivity(null);
@@ -58,13 +107,14 @@ function stopMusic(current) {
   current.track?.abort.abort();
   current.player.stop(true);
   if (current.connection.state.status !== VoiceConnectionStatus.Destroyed) current.connection.destroy();
+  if (current.card && current.track) await updateMusicCard(current, 'Lecture arrêtée');
 }
 
 function armIdle(current) {
   clearTimeout(current.idleTimer);
   current.idleTimer = setTimeout(() => {
     void schedule(() => {
-      if (session === current && !current.track) stopMusic(current);
+      if (session === current && !current.track) return stopMusic(current);
     });
   }, 30_000);
 }
@@ -144,7 +194,8 @@ function openYouTubeAudio(url, abort) {
 
 async function playNext(current) {
   if (session !== current) return;
-  current.track?.abort.abort();
+  const previousTrack = current.track;
+  previousTrack?.abort.abort();
   current.track = undefined;
   while (current.queue.length) {
     const item = current.queue.shift();
@@ -177,6 +228,8 @@ async function playNext(current) {
       pipeline(input, ffmpeg.stdin, () => {});
       current.player.play(resource);
       await entersState(current.player, AudioPlayerStatus.Playing, item.youtube ? 30_000 : 8_000);
+      if (track.youtube) await youtubeTitle(track);
+      await updateMusicCard(current, 'En lecture');
       return true;
     } catch {
       current.track = undefined;
@@ -186,6 +239,7 @@ async function playNext(current) {
       clearTimeout(timeout);
     }
   }
+  if (current.card && previousTrack) await updateMusicCard(current, 'Lecture terminée', previousTrack);
   armIdle(current);
   return false;
 }
@@ -212,7 +266,7 @@ async function connect(channel) {
     await entersState(connection, VoiceConnectionStatus.Ready, 12_000);
     client.user.setActivity(DJ_NAME, { type: ActivityType.Listening });
   } catch {
-    stopMusic(current);
+    await stopMusic(current);
     throw new Error('Multix n’a pas réussi à rejoindre le vocal.');
   }
   return current;
@@ -235,7 +289,7 @@ function youtubeItem(value) {
   if (!/^[A-Za-z0-9_-]{11}$/.test(videoId ?? '')) {
     throw new Error('Colle un lien HTTPS vers une vidéo YouTube.');
   }
-  return { name: 'YouTube · ' + videoId, url: 'https://www.youtube.com/watch?v=' + videoId, youtube: true };
+  return { name: 'YouTube · ' + videoId, url: 'https://www.youtube.com/watch?v=' + videoId, youtube: true, youtubeId: videoId };
 }
 
 function linkItem(value) {
@@ -288,18 +342,31 @@ async function run(interaction) {
     }
     const current = session ?? await connect(channel);
     if (current.queue.length >= 10) throw new Error('La file contient déjà 10 morceaux.');
-    current.queue.push(item);
+    const user = interaction.member.user;
+    const requester = interaction.member.nick || user.global_name || user.username || 'Un membre';
+    const requesterAvatar = user.avatar && /^[a-f0-9_]+$/i.test(user.avatar)
+      ? 'https://cdn.discordapp.com/avatars/' + user.id + '/' + user.avatar + '.png?size=64'
+      : undefined;
+    current.queue.push({ ...item, requester: requester.slice(0, 100), requesterAvatar, textChannelId: interaction.channel_id });
     if (current.track) return 'Ajouté à la file — ' + item.name;
     return await playNext(current) ? '🎧 DJ Multix prend les platines — ' + item.name : (item.youtube ? 'Impossible de lire cette vidéo. Vérifie qu’elle est publique et que yt-dlp est installé et à jour sur le PC.' : 'Ce lien ou ce fichier ne fournit pas un flux que Multix peut lire.');
   }
   const current = session;
   if (name === 'stop' && current) {
-    stopMusic(current);
+    await stopMusic(current);
     return 'Musique arrêtée et file vidée.';
   }
   if (!current?.track) return 'Aucun morceau en cours.';
-  if (name === 'pause') return current.player.pause() ? 'Lecture en pause.' : 'La lecture est déjà en pause ou en cours de chargement.';
-  if (name === 'resume') return current.player.unpause() ? 'Lecture reprise.' : 'La lecture n’est pas en pause.';
+  if (name === 'pause') {
+    if (!current.player.pause()) return 'La lecture est déjà en pause ou en cours de chargement.';
+    await updateMusicCard(current, 'En pause');
+    return 'Lecture en pause.';
+  }
+  if (name === 'resume') {
+    if (!current.player.unpause()) return 'La lecture n’est pas en pause.';
+    await updateMusicCard(current, 'En lecture');
+    return 'Lecture reprise.';
+  }
   if (name === 'skip') {
     current.player.stop(true);
     return 'Morceau passé.';
